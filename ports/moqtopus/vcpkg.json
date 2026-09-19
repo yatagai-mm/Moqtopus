@@ -1,0 +1,19 @@
+{
+  "name": "moqtopus",
+  "version": "0.0.1",
+  "description": "Media over QUIC Transport client API built on MsQuic",
+  "homepage": "https://github.com/yatagai-mm/Moqtopus",
+  "license": "MIT",
+  "dependencies": [
+    "msquic",
+    "spdlog",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ]
+}
