@@ -185,7 +185,8 @@ public:
 
   std::future<void> stop_subscription(RequestId request_id) {
     std::promise<void> promise;
-    stop_subscription_now(request_id, false);
+    stop_subscription_now(request_id, false, std::string{},
+                          static_cast<uint64_t>(StreamResetCode::Cancelled));
     promise.set_value();
     return promise.get_future();
   }
@@ -289,7 +290,7 @@ private:
   }
 
   // Stops the subscription corresponding to request_id immediately.
-  // Unless specified, it sends STOP_SENDING with error code 0 (Internal Error)
+  // Unless specified, it resets both directions with error code 0 (Internal Error).
   void stop_subscription_now(RequestId request_id, bool report_error, std::string reason = std::string{},
                              uint64_t stream_error_code = 0) {
     const auto found = subscriptions_.find(request_id);
@@ -300,6 +301,7 @@ private:
     auto fsm = found->second;
     fsm->terminate(report_error, report_error ? reason : std::string{});
     if (auto stream = fsm->stream()) {
+      stream->abort_send(stream_error_code);
       stream->abort_receive(stream_error_code);
     }
     update_subscription_snapshot_from_fsm(request_id);
