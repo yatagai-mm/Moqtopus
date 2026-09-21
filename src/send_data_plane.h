@@ -11,7 +11,9 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace moq::detail {
 
@@ -50,8 +52,8 @@ public:
   bool unregister_track(const TrackNamespace &track_namespace, const TrackName &track_name);
   const PublishedTrack *find_track(const TrackNamespace &track_namespace, const TrackName &track_name) const;
   bool has_track_in_namespace(const TrackNamespace &track_namespace) const;
-  std::optional<RequestId> subscription_for_track(const TrackNamespace &track_namespace,
-                                                  const TrackName &track_name) const;
+  std::vector<RequestId> subscriptions_for_track(const TrackNamespace &track_namespace,
+                                                 const TrackName &track_name) const;
   std::optional<Location> largest_location(const TrackNamespace &track_namespace, const TrackName &track_name) const;
 
   // ---- subscription lifecycle ----
@@ -91,12 +93,12 @@ private:
   struct TrackEntry {
     PublishedTrack track;
     std::optional<Location> largest;
-    std::optional<RequestId> subscription;
+    std::unordered_set<RequestId> subscriptions;
   };
 
   static std::string make_track_key(const TrackNamespace &track_namespace, const TrackName &track_name);
-  void resolve_filter(const codec::SubscriptionFilter &filter, const std::optional<Location> &largest,
-                      Location &start, std::optional<GroupId> &end_group) const;
+  void resolve_filter(const codec::SubscriptionFilter &filter, const std::optional<Location> &largest, Location &start,
+                      std::optional<GroupId> &end_group) const;
   bool passes_filter(const SubscriptionSend &subscription, GroupId group_id, ObjectId object_id) const;
   void send_on_subgroup_stream(SubscriptionSend &subscription, const PublishedObject &object);
   void send_datagram_object(const SubscriptionSend &subscription, const PublishedObject &object);

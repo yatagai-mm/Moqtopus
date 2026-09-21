@@ -476,14 +476,13 @@ private:
 
   void end_track_locked(const TrackNamespace &track_namespace, const TrackName &track_name, PublishDoneCode code,
                         std::string reason) {
-    const std::optional<RequestId> request_id = send_plane_.subscription_for_track(track_namespace, track_name);
-    if (!request_id) {
-      return;
-    }
-    const auto found = subscriptions_.find(*request_id);
-    if (found != subscriptions_.end()) {
-      const auto fsm = found->second; // finish() erases the map entry
-      fsm->finish(code, reason);
+    const std::vector<RequestId> request_ids = send_plane_.subscriptions_for_track(track_namespace, track_name);
+    for (const RequestId request_id : request_ids) {
+      const auto found = subscriptions_.find(request_id);
+      if (found != subscriptions_.end()) {
+        const auto fsm = found->second; // finish() erases the map entry
+        fsm->finish(code, reason);
+      }
     }
   }
 

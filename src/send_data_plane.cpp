@@ -42,7 +42,7 @@ std::string SendDataPlane::make_track_key(const TrackNamespace &track_namespace,
 
 bool SendDataPlane::register_track(PublishedTrack track) {
   const std::string key = make_track_key(track.track_namespace, track.track_name);
-  return tracks_.emplace(key, TrackEntry{std::move(track), std::nullopt, std::nullopt}).second;
+  return tracks_.emplace(key, TrackEntry{std::move(track), std::nullopt, {}}).second;
 }
 
 bool SendDataPlane::unregister_track(const TrackNamespace &track_namespace, const TrackName &track_name) {
@@ -50,9 +50,12 @@ bool SendDataPlane::unregister_track(const TrackNamespace &track_namespace, cons
   if (entry == tracks_.end()) {
     return false;
   }
-  if (entry->second.subscription) {
+  if (!entry->second.subscriptions.empty()) {
     // The session finishes subscriptions before unregistering; reset defensively.
-    detach_subscription(*entry->second.subscription, true, static_cast<uint64_t>(StreamResetCode::Cancelled));
+    const std::vector<RequestId> request_ids(entry->second.subscriptions.begin(), entry->second.subscriptions.end());
+    for (const RequestId request_id : request_ids) {
+      detach_subscription(request_id, true, static_cast<uint64_t>(StreamResetCode::Cancelled));
+    }
   }
   tracks_.erase(entry);
   return true;
@@ -73,10 +76,13 @@ bool SendDataPlane::has_track_in_namespace(const TrackNamespace &track_namespace
   return false;
 }
 
-std::optional<RequestId> SendDataPlane::subscription_for_track(const TrackNamespace &track_namespace,
-                                                               const TrackName &track_name) const {
+std::vector<RequestId> SendDataPlane::subscriptions_for_track(const TrackNamespace &track_namespace,
+                                                              const TrackName &track_name) const {
   const auto entry = tracks_.find(make_track_key(track_namespace, track_name));
-  return entry == tracks_.end() ? std::nullopt : entry->second.subscription;
+  if (entry == tracks_.end()) {
+    return {};
+  }
+  return {entry->second.subscriptions.begin(), entry->second.subscriptions.end()};
 }
 
 std::optional<Location> SendDataPlane::largest_location(const TrackNamespace &track_namespace,
@@ -131,9 +137,12 @@ SubscriptionDecision SendDataPlane::attach_subscription(RequestId request_id, Tr
   if (entry == tracks_.end()) {
     return SubscriptionDecision::reject(RequestErrorCode::DoesNotExist, "track is not registered");
   }
-  if (entry->second.subscription) {
+  if (subscriptions_.find(request_id) != subscriptions_.end()) {
+    // TODO(moqt-draft-21): Draft-21 and later permit multiple subscriptions to a
+    // single track when their Request IDs differ. DuplicateSubscription must not
+    // be emitted solely because another Request ID already subscribes to this track.
     return SubscriptionDecision::reject(RequestErrorCode::DuplicateSubscription,
-                                        "track already has an established subscription");
+                                        "request ID already has an established subscription");
   }
 
   SubscriptionSend subscription;
@@ -153,7 +162,7 @@ SubscriptionDecision SendDataPlane::attach_subscription(RequestId request_id, Tr
     subscription.joining_location = entry->second.largest;
   }
 
-  entry->second.subscription = request_id;
+  entry->second.subscriptions.insert(request_id);
   subscriptions_.emplace(request_id, std::move(subscription));
   return SubscriptionDecision::accept();
 }
@@ -215,8 +224,8 @@ uint64_t SendDataPlane::detach_subscription(RequestId request_id, bool reset, ui
   }
   const uint64_t stream_count = subscription.stream_count;
   const auto track = tracks_.find(subscription.track_key);
-  if (track != tracks_.end() && track->second.subscription == request_id) {
-    track->second.subscription.reset();
+  if (track != tracks_.end()) {
+    track->second.subscriptions.erase(request_id);
   }
   subscriptions_.erase(found);
   return stream_count;
@@ -239,40 +248,45 @@ void SendDataPlane::publish(const PublishedObject &object) {
     entry.largest = location;
   }
 
-  if (!entry.subscription) {
+  if (entry.subscriptions.empty()) {
     return;
   }
-  const auto subscription_it = subscriptions_.find(*entry.subscription);
-  if (subscription_it == subscriptions_.end()) {
-    return;
-  }
-  SubscriptionSend &subscription = subscription_it->second;
 
-  std::optional<PublishDoneCode> complete;
-  std::string complete_reason;
-  if (subscription.end_group && object.group_id > *subscription.end_group) {
-    complete = PublishDoneCode::SubscriptionEnded;
-    complete_reason = "end of subscription range";
-  } else {
-    if (subscription.forward && passes_filter(subscription, object.group_id, object.object_id)) {
-      if (object.delivery_kind == DeliveryKind::Datagram) {
-        send_datagram_object(subscription, object);
-      } else {
-        send_on_subgroup_stream(subscription, object);
-      }
+  // Completion callbacks detach subscriptions, so iterate over a stable copy.
+  const std::vector<RequestId> request_ids(entry.subscriptions.begin(), entry.subscriptions.end());
+  for (const RequestId request_id : request_ids) {
+    const auto subscription_it = subscriptions_.find(request_id);
+    if (subscription_it == subscriptions_.end()) {
+      entry.subscriptions.erase(request_id);
+      continue;
     }
-    if (object.status && *object.status == codec::kObjectStatusEndOfTrack) {
-      complete = PublishDoneCode::TrackEnded;
-      complete_reason = "end of track";
-    } else if (subscription.end_group && object.group_id == *subscription.end_group &&
-               (object.end_of_group || (object.status && *object.status == codec::kObjectStatusEndOfGroup))) {
+    SubscriptionSend &subscription = subscription_it->second;
+
+    std::optional<PublishDoneCode> complete;
+    std::string complete_reason;
+    if (subscription.end_group && object.group_id > *subscription.end_group) {
       complete = PublishDoneCode::SubscriptionEnded;
       complete_reason = "end of subscription range";
+    } else {
+      if (subscription.forward && passes_filter(subscription, object.group_id, object.object_id)) {
+        if (object.delivery_kind == DeliveryKind::Datagram) {
+          send_datagram_object(subscription, object);
+        } else {
+          send_on_subgroup_stream(subscription, object);
+        }
+      }
+      if (object.status && *object.status == codec::kObjectStatusEndOfTrack) {
+        complete = PublishDoneCode::TrackEnded;
+        complete_reason = "end of track";
+      } else if (subscription.end_group && object.group_id == *subscription.end_group &&
+                 (object.end_of_group || (object.status && *object.status == codec::kObjectStatusEndOfGroup))) {
+        complete = PublishDoneCode::SubscriptionEnded;
+        complete_reason = "end of subscription range";
+      }
     }
-  }
-  if (complete) {
-    // The owner finishes the subscription; `subscription`/`entry` die here.
-    callbacks_.subscription_complete(subscription.request_id, *complete, std::move(complete_reason));
+    if (complete) {
+      callbacks_.subscription_complete(subscription.request_id, *complete, std::move(complete_reason));
+    }
   }
 }
 
