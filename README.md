@@ -1,4 +1,5 @@
 # Moqtopus
+![moqtopus oqtopus](/static/moqtopus.png)
 MoQ Client API over MsQUIC. Moqtopus keeps the dependency graph small, which helps a lot when the rest of your application already take a gazillion year building (like UE).
 
 ## Draft Compatibility
