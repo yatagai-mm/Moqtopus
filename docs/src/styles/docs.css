@@ -5,8 +5,8 @@ a { color: var(--accent); text-underline-offset: .2em; }
 a:hover { color: #003f78; }
 a:focus-visible, summary:focus-visible { outline: 3px solid #1485dd; outline-offset: 4px; }
 header { min-height: 82px; padding: 1.25rem 2.5rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--border); }
-.brand { color: #142d43; text-decoration: none; font-size: 1.4rem; font-weight: 750; letter-spacing: -.04em; }
-.brand span { font-size: .875rem; font-weight: 500; letter-spacing: 0; color: #4d6170; margin-left: 1rem; }
+.brand { display: inline-flex; flex-shrink: 0; max-width: 100%; }
+.brand img { display: block; width: auto; height: 3rem; max-width: 100%; object-fit: contain; }
 .edition, .nav-label, .eyebrow, footer { font-size: .875rem; color: #526675; }
 .shell { display: grid; grid-template-columns: 210px minmax(0, 800px) 190px; gap: 3rem; max-width: 1440px; margin: auto; padding: 2.5rem; }
 nav, aside { position: sticky; top: 2rem; align-self: start; max-height: calc(100vh - 4rem); overflow-y: auto; }

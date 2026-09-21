@@ -1,5 +1,6 @@
 ---
 import '../styles/docs.css';
+import logo from '../../../static/moqtopus-transparent.png';
 
 const { frontmatter, headings = [] } = Astro.props;
 const pages = [
@@ -27,7 +28,9 @@ const title = `${frontmatter.title} · Moqtopus`;
   <body>
     <a class="skip-link" href="#content">Skip to content</a>
     <header>
-      <a class="brand" href={`${base}/`}>Moqtopus<span>C++ API</span></a>
+      <a class="brand" href={`${base}/`}>
+        <img src={logo.src} width={logo.width} height={logo.height} alt="Moqtopus" />
+      </a>
       <span class="edition">Media over QUIC · draft-18</span>
     </header>
     <div class="shell">

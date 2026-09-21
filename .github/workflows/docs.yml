@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'static/moqtopus-transparent.png'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
