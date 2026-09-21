@@ -79,7 +79,7 @@ public:
   std::future<void> ready() {
     std::promise<void> promise;
     std::future<void> future = promise.get_future();
-    if (phase_ == SessionPhase::Ready || phase_ == SessionPhase::Draining) {
+    if (phase_ == SessionPhase::Ready) {
       promise.set_value();
     } else if (phase_ == SessionPhase::Closing || phase_ == SessionPhase::Closed) {
       fail(promise, "MOQT session closed before SETUP completed");

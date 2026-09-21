@@ -159,7 +159,7 @@ public:
     const std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::promise<void> promise;
     std::future<void> future = promise.get_future();
-    if (phase_ == SessionPhase::Ready || phase_ == SessionPhase::Draining) {
+    if (phase_ == SessionPhase::Ready) {
       promise.set_value();
     } else if (phase_ == SessionPhase::Closing || phase_ == SessionPhase::Closed) {
       fail(promise, "MOQT session closed before SETUP completed");
@@ -193,7 +193,7 @@ public:
       spdlog::warn("register_track ignored: track is already registered");
       return;
     }
-    if (phase_ == SessionPhase::Ready || phase_ == SessionPhase::Draining) {
+    if (phase_ == SessionPhase::Ready) {
       announce_namespace(track_namespace);
     } else {
       pending_announcements_.push_back(track_namespace);
@@ -211,7 +211,7 @@ public:
 
   void publish(PublishedObject object) {
     const std::lock_guard<std::recursive_mutex> lock(mutex_);
-    if (phase_ != SessionPhase::Ready && phase_ != SessionPhase::Draining) {
+    if (phase_ != SessionPhase::Ready) {
       spdlog::warn("publish dropped: session is not ready");
       return;
     }
@@ -261,7 +261,7 @@ public:
     if (phase_ == SessionPhase::Closing || phase_ == SessionPhase::Closed) {
       return;
     }
-    if (phase_ != SessionPhase::Ready && phase_ != SessionPhase::Draining) {
+    if (phase_ != SessionPhase::Ready) {
       begin_close(SessionCloseErrorCode::ProtocolViolation, "peer request before SETUP completed");
       return;
     }

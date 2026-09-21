@@ -105,7 +105,6 @@ enum class SessionPhase {
   Init,
   SetupInProgress,
   Ready,
-  Draining,
   Closing,
   Closed,
 };
