@@ -3,9 +3,11 @@
 #include "moq/codec.h"
 
 #include <algorithm>
+#include <iomanip>
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <spdlog/spdlog.h>
 #include <utility>
 
@@ -74,12 +76,19 @@ public:
     if (closed_) {
       return;
     }
+    current_fin_ = fin;
+    current_chunk_count_ = count;
+    current_receive_bytes_ = 0;
+    for (size_t index = 0; index < count; ++index) {
+      current_receive_bytes_ += chunks[index].size;
+    }
     if (stash_.empty() && count == 1) { // fast path: zero copy
       Cursor cursor{chunks[0].data, chunks[0].size};
       run(cursor, fin);
       if (!closed_ && cursor.remaining() != 0) {
         stash_.assign(cursor.data + cursor.off, cursor.data + cursor.size);
       }
+      stream_offset_ += cursor.off;
       return;
     }
     for (size_t index = 0; index < count; ++index) {
@@ -90,6 +99,7 @@ public:
     if (!closed_) {
       stash_.erase(stash_.begin(), stash_.begin() + static_cast<std::ptrdiff_t>(cursor.off));
     }
+    stream_offset_ += cursor.off;
   }
 
   void on_peer_send_aborted(uint64_t) override { closed_ = true; }
@@ -112,7 +122,7 @@ private:
     }
     while (!closed_) {
       const size_t mark = cursor.off;
-      const Parse object = parse_object(cursor);
+      const Parse object = parse_object(cursor, mark);
       if (object == Parse::Error) {
         return;
       }
@@ -141,6 +151,7 @@ private:
     if (!codec::is_subgroup_stream_type(type)) {
       return fail("invalid SUBGROUP_HEADER stream type");
     }
+    header_type_ = type;
     if (!cursor.varint(alias) || !cursor.varint(group_id_)) {
       return Parse::NeedMore;
     }
@@ -182,7 +193,7 @@ private:
     return Parse::Done;
   }
 
-  Parse parse_object(Cursor &cursor) {
+  Parse parse_object(Cursor &cursor, size_t object_start) {
     if (cursor.remaining() == 0) {
       return Parse::NeedMore;
     }
@@ -213,7 +224,8 @@ private:
         return Parse::NeedMore;
       }
       if (!is_valid_object_status(status_code) || (status_code != kNormalStatus && !properties.empty())) {
-        return fail("invalid subgroup object status");
+        return fail_invalid_object_status(cursor, object_start, object_delta, payload_length, status_code,
+                                          properties.size);
       }
       object_status = status_code;
     } else if (!cursor.view(payload_length, payload)) {
@@ -255,6 +267,41 @@ private:
     return Parse::Error;
   }
 
+  Parse fail_invalid_object_status(const Cursor &cursor, size_t object_start, uint64_t object_delta,
+                                   uint64_t payload_length, uint64_t status_code, size_t properties_length) {
+    constexpr size_t kHexBytes = 64;
+    const size_t available = cursor.size - std::min(object_start, cursor.size);
+    const size_t hex_size = std::min(available, kHexBytes);
+    std::ostringstream detail;
+    detail << "invalid subgroup object status"
+           << " stream_id=" << stream_->id() << " header_type=0x" << std::hex << header_type_ << std::dec
+           << " alias=" << alias_ << " group=" << group_id_ << " subgroup=";
+    if (subgroup_id_) {
+      detail << *subgroup_id_;
+    } else {
+      detail << "unresolved";
+    }
+    detail << " object_offset=" << (stream_offset_ + object_start) << " object_delta=" << object_delta
+           << " last_object_id=";
+    if (last_object_id_) {
+      detail << *last_object_id_;
+    } else {
+      detail << "none";
+    }
+    detail << " payload_length=" << payload_length << " status=" << status_code
+           << " properties_length=" << properties_length << " fin=" << (current_fin_ ? 1 : 0)
+           << " chunks=" << current_chunk_count_ << " receive_bytes=" << current_receive_bytes_
+           << " buffer_bytes=" << cursor.size << " bytes_from_object=";
+    detail << std::hex << std::setfill('0');
+    for (size_t index = 0; index < hex_size; ++index) {
+      if (index != 0) {
+        detail << ':';
+      }
+      detail << std::setw(2) << static_cast<unsigned>(cursor.data[object_start + index]);
+    }
+    return fail(detail.str());
+  }
+
   DataPlane &plane_;
   std::shared_ptr<StreamContext> stream_;
   ByteBuffer stash_;
@@ -263,9 +310,14 @@ private:
   bool closed_ = false;
   bool properties_per_object_ = false;
   bool end_of_group_on_fin_ = false;
+  bool current_fin_ = false;
   uint8_t subgroup_id_mode_ = 0;
+  uint64_t header_type_ = 0;
   TrackAlias alias_ = 0;
   GroupId group_id_ = 0;
+  size_t current_chunk_count_ = 0;
+  size_t current_receive_bytes_ = 0;
+  size_t stream_offset_ = 0;
   std::optional<SubgroupId> subgroup_id_;
   uint8_t publisher_priority_ = 128;
   std::optional<ObjectId> last_object_id_;
