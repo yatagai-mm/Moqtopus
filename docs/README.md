@@ -15,17 +15,43 @@ npm ci
 npm run dev
 ```
 
-Open the local URL printed by Astro. To build and inspect the static output:
+Open the local URL printed by Astro (normally `http://localhost:4321/Moqtopus/`).
+To build and inspect the static output:
 
 ```sh
 npm run build
 npm run preview
 ```
 
-The generated site is in `dist/`. Serve that directory with any static host.
-For hosting under a subpath, set `base` in `astro.config.mjs` (for example,
-`base: '/Moqtopus'`) before building. Navigation respects Astro's base path;
-content links are relative. No hosting service is configured by this project.
+The generated site is in `dist/`. The default configuration targets
+`https://yatagai-mm.github.io/Moqtopus/`. Navigation and assets use `/Moqtopus/`;
+content links are relative. Use `npm run preview` to serve the build at that base
+path locally.
+
+## GitHub Pages
+
+The workflow in `../.github/workflows/docs.yml` installs the locked dependencies,
+builds `docs/`, and deploys `docs/dist/` using the official GitHub Pages actions.
+No separate publishing branch or personal access token is needed.
+
+One-time repository setup:
+
+1. Open **Settings → Pages → Build and deployment**.
+2. Set **Source** to **GitHub Actions**.
+3. Push the workflow and documentation to `main`. Alternatively, run
+   **Deploy documentation to GitHub Pages** from the **Actions** tab on `main`.
+
+Changes to `docs/**` or the workflow on `main` trigger deployment automatically.
+Manual runs from other branches can build, but only `main` can deploy. The
+`github-pages` environment may require approval if repository rules enforce it.
+
+During CI, the build uses the origin and base path returned by
+`actions/configure-pages`, so GitHub Pages custom-domain settings and forks are
+respected. If you change the deployment URL, update `site` and `base` in
+`astro.config.mjs` as well to keep local previews consistent.
+
+See GitHub's [custom Pages workflow documentation](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages)
+for repository permissions and environment configuration.
 
 ## Editing
 
