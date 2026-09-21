@@ -1,0 +1,66 @@
+---
+layout: ../layouts/Docs.astro
+title: Configuration
+description: Connection settings and per-session limits, with the defaults used by the library.
+---
+
+## MsQuicClientConfig
+
+Include `moq/client_config.h`. Both session classes accept this structure by value.
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `host` | `std::string` | Empty | Relay hostname or address; set this before connecting. |
+| `port` | `uint16_t` | `0` | Relay port; set a valid endpoint port. |
+| `alpn` | `std::string` | `"moqt-18"` | Application protocol offered by the transport. |
+| `authority` | `std::string` | Empty | SETUP authority; empty uses `host + ":" + port`. |
+| `path` | `std::string` | `"/"` | Path sent in SETUP. |
+| `disable_certificate_validation` | `bool` | `true` | Disables peer certificate validation when true. |
+| `idle_timeout` | `std::chrono::milliseconds` | `30000` ms | MsQuic connection idle timeout. |
+
+```cpp
+#include <moq/client_config.h>
+#include <chrono>
+
+moq::MsQuicClientConfig relay_config() {
+  moq::MsQuicClientConfig config;
+  config.host = "relay.example.com";
+  config.port = 4433;
+  config.disable_certificate_validation = false;
+  config.idle_timeout = std::chrono::seconds(30);
+  return config;
+}
+```
+
+`authority` and `path` are MOQT setup fields. They do not change the host and
+port to which MsQuic connects. Changing `alpn` alone does not implement a new
+MOQT draft in the codec.
+
+## SubscriberConfig
+
+Include `moq/subscriber_session.h` and pass this as the second argument to
+`MoqSubscriberSession::connect()`.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `unknown_alias_policy` | `UnknownAliasPolicy::BufferDatagrams` | How to handle data for an alias that is not yet registered. |
+| `max_buffered_datagrams_per_alias` | `16` | Maximum queued datagrams for one unknown alias. |
+| `max_buffered_datagram_bytes` | `256 * 1024` | Total bytes allowed across buffered unknown-alias datagrams. |
+
+The `UnknownAliasPolicy` values are:
+
+- `Drop`: discard data for an unknown alias.
+- `BufferDatagrams`: retain datagrams until the alias is registered. Datagrams
+  exceeding either limit are dropped. This does not buffer unknown-alias streams.
+- `Error`: treat an unknown alias as a protocol error.
+
+## PublisherConfig
+
+Include `moq/publisher_session.h` and pass this as the second argument to
+`MoqPublisherSession::connect()`.
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `max_subscriptions` | `size_t` | `128` | Maximum number of subscriptions accepted by this publisher session. |
+
+At capacity, new subscriptions are rejected with `RequestErrorCode::ExcessiveLoad`.

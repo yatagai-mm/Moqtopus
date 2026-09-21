@@ -1,0 +1,137 @@
+---
+layout: ../layouts/Docs.astro
+title: Publisher
+description: Register tracks and fan out live objects to subscriptions accepted from a relay.
+---
+
+Include `moq/publisher_session.h`. `MoqPublisherSession` is a client that connects
+to a relay and accepts the peer's SUBSCRIBE requests for registered tracks.
+Its public calls are thread-safe; `publish()` runs synchronously.
+
+## Publish a track
+
+This local-relay example publishes for ten seconds. Run a subscriber while it
+is active. Objects sent before a subscription is established are not replayed.
+
+```cpp
+#include <moq/publisher_session.h>
+#include <chrono>
+#include <exception>
+#include <iostream>
+#include <string>
+#include <thread>
+#include <utility>
+
+int main() {
+  try {
+    moq::MsQuicClientConfig config;
+    config.host = "localhost";
+    config.port = 4433;
+    config.disable_certificate_validation = true; // Local test relay only.
+
+    auto session = moq::MoqPublisherSession::connect(config).get();
+    session->ready().get();
+
+    moq::PublishedTrack track;
+    track.track_namespace = {"camera", "front"};
+    track.track_name = "video";
+    session->register_track(track);
+
+    for (uint64_t index = 0; index < 100; ++index) {
+      moq::PublishedObject object;
+      object.track_namespace = track.track_namespace;
+      object.track_name = track.track_name;
+      object.group_id = index / 10;
+      object.object_id = index % 10;
+      object.end_of_group = object.object_id == 9;
+      const std::string text = "frame " + std::to_string(index);
+      object.payload.assign(text.begin(), text.end());
+      session->publish(std::move(object));
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    session->end_track(track.track_namespace, track.track_name);
+    session->close();
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return 1;
+  }
+}
+```
+
+## Session methods
+
+| Method | Return type | Behavior |
+| --- | --- | --- |
+| `connect(MsQuicClientConfig, PublisherConfig = {})` | `std::future<std::unique_ptr<MoqPublisherSession>>` | Static factory; starts the transport. |
+| `ready()` | `std::future<void>` | Waits for MOQT SETUP to complete. |
+| `state() const` | `SessionStateSnapshot` | Copies the current state and subscription count. |
+| `register_track(PublishedTrack)` | `void` | Registers a track and announces its namespace when ready. |
+| `unregister_track(const TrackNamespace&, const TrackName&)` | `void` | Ends current subscriptions and removes the track; withdraws its namespace when no tracks remain there. |
+| `publish(PublishedObject)` | `void` | Serializes and submits the object to matching, forwarding subscriptions. |
+| `end_track(const TrackNamespace&, const TrackName&, PublishDoneCode = PublishDoneCode::TrackEnded, std::string reason = {})` | `void` | Sends PUBLISH_DONE and finishes current subscriptions for the track. |
+| `close(SessionCloseErrorCode = SessionCloseErrorCode::NoError)` | `void` | Begins connection shutdown. |
+
+`register_track()` can be called before readiness; the announcement is deferred.
+Duplicate registration is ignored rather than replacing track metadata. A
+namespace whose first field is `"."` is reserved and is not registered.
+
+`end_track()` leaves the track registered, so it can accept later subscriptions.
+Use `unregister_track()` to remove it. The session is non-copyable; destruction
+closes the connection and drains transport callbacks.
+
+## PublishedTrack
+
+| Field | Type | Default / meaning |
+| --- | --- | --- |
+| `track_namespace` | `TrackNamespace` | Namespace fields identifying the track. |
+| `track_name` | `TrackName` | Name within the namespace. |
+| `track_properties` | `ObjectProperties` | Empty encoded property bytes; returned in SUBSCRIBE_OK. |
+| `default_publisher_priority` | `uint8_t` | `128`. Currently not used as a fallback by the send path; set each object's `publisher_priority`. |
+| `default_group_order` | `uint8_t` | `1` (ascending); `2` means descending. Used when a subscription omits group order. |
+
+## PublishedObject
+
+| Field | Type | Default / meaning |
+| --- | --- | --- |
+| `track_namespace`, `track_name` | `TrackNamespace`, `TrackName` | Must identify a registered track. |
+| `group_id` | `GroupId` | `0`. |
+| `subgroup_id` | `std::optional<SubgroupId>` | Unset; subgroup streams use `0` when absent. |
+| `object_id` | `ObjectId` | `0`; increase within a subgroup stream. |
+| `publisher_priority` | `uint8_t` | `128`; encoded in the datagram or subgroup header. |
+| `properties` | `ObjectProperties` | Empty; owned encoded property bytes. |
+| `payload` | `ByteBuffer` | Empty; owned application bytes. |
+| `status` | `std::optional<ObjectStatusCode>` | Unset; optional Normal, EndOfGroup, or EndOfTrack status. |
+| `delivery_kind` | `DeliveryKind` | `SubgroupStream`; `Datagram` is also supported. |
+| `end_of_subgroup` | `bool` | `false`; finish the subgroup stream after this object. |
+| `end_of_group` | `bool` | `false`; announce that the group is complete and finish this object's subgroup stream. |
+
+`publish()` takes ownership of its argument by value. Move a completed object to
+avoid copying its buffers. Return from `publish()` means the synchronous send
+work has finished, **not** that a receiver acknowledged delivery.
+
+## Streams and datagrams
+
+Subgroup streams use reliable QUIC streams. Keep object IDs increasing within
+each group/subgroup pair. A non-increasing ID causes the implementation to reset
+the old stream and open a replacement. Priority is written when the subgroup
+stream opens; changing it on later objects does not rewrite that header.
+
+For datagrams, set `delivery_kind = moq::DeliveryKind::Datagram`. Delivery may
+be lost or reordered and is subject to transport size limits. Datagram objects
+do not carry a subgroup stream ID.
+
+Use `moq::codec::kObjectStatusNormal` (`0`), `kObjectStatusEndOfGroup` (`3`), or
+`kObjectStatusEndOfTrack` (`4`) from `moq/codec.h` when supplying a status.
+Non-normal status objects must have an empty payload. For an ordinary payload
+datagram, leave `status` unset; explicit status uses the status-datagram encoding.
+
+## Current limits
+
+- Objects published before readiness, for unregistered tracks, with unsupported
+  statuses, or with `FetchStream` delivery are logged and dropped.
+- Objects are sent only to current matching subscriptions. There is no history
+  cache or delivery receipt returned by `publish()`.
+- Nonzero object or subgroup delivery timeouts are rejected with `NotSupported`.
+- Group order and subscriber priority do not provide a history-sorting or
+  scheduling service. The live send path follows application publish calls.

@@ -1,0 +1,175 @@
+---
+layout: ../layouts/Docs.astro
+title: Codec
+description: Low-level encoding and decoding helpers for MOQT control messages and object delivery.
+---
+
+Include `moq/codec.h`. These functions live in `moq::codec`. Most applications
+only need the session APIs plus parameter constants. Use the codec directly
+when constructing protocol tooling or integrating custom wire handling.
+
+## Framing and integers
+
+```cpp
+void write_varint(ByteBuffer& out, uint64_t value);
+VarintResult read_varint(const uint8_t* data, size_t size, size_t offset = 0);
+VarintResult read_varint(const ByteBuffer& bytes, size_t offset = 0);
+void append_control_message(ByteBuffer& out, uint64_t type,
+                            const ByteBuffer& payload);
+ControlMessageResult read_control_message(const ByteBuffer& bytes,
+                                          size_t offset = 0);
+```
+
+`write_varint()` appends the MOQT integer encoding. `read_varint()` returns a
+`VarintResult` with `status`, `value`, and consumed `bytes`. These are MOQT
+integers, not a generic QUIC transport-varint helper.
+
+`append_control_message()` writes the type, a two-byte payload length, and
+payload. It throws `std::length_error` if the payload exceeds 65535 bytes.
+`read_control_message()` returns `ControlMessageResult {status, message, bytes}`;
+`ControlMessage` holds `uint64_t type` and an owned `ByteBuffer payload`.
+
+`DecodeStatus` defines `Done`, `NeedMoreData`, and `Error`. Only consume `bytes`
+after `Done`. Incomplete frames return `NeedMoreData`; retain the bytes and
+append more input before retrying.
+
+```cpp
+#include <moq/codec.h>
+#include <string>
+
+bool validate_setup_frame(const moq::ByteBuffer& input, std::string& error) {
+  auto frame = moq::codec::read_control_message(input);
+  if (frame.status != moq::codec::DecodeStatus::Done) {
+    error = "A complete frame is required";
+    return false;
+  }
+  if (frame.message.type != moq::codec::kMessageSetup) {
+    error = "Expected SETUP";
+    return false;
+  }
+  return moq::codec::decode_setup(frame.message.payload, error);
+}
+```
+
+## Control encoders
+
+Every `encode_*` function in this section returns an owned `ByteBuffer`
+containing the **complete framed control message**. Do not frame it a second time.
+
+```cpp
+ByteBuffer encode_setup(std::string authority, std::string path);
+ByteBuffer encode_subscribe(RequestId request_id, const SubscribeRequest& request);
+ByteBuffer encode_request_update(RequestId request_id, const RequestUpdate& update);
+ByteBuffer encode_request_error(RequestErrorCode code, std::string reason,
+                                uint64_t retry_interval = 0);
+ByteBuffer encode_subscribe_ok(TrackAlias track_alias,
+                               std::vector<Parameter> parameters,
+                               const ObjectProperties& track_properties);
+ByteBuffer encode_request_ok(std::vector<Parameter> parameters,
+                             const ObjectProperties& track_properties = {});
+ByteBuffer encode_publish_done(uint64_t status_code, uint64_t stream_count,
+                               const std::string& reason);
+ByteBuffer encode_publish_namespace(RequestId request_id,
+                                    const TrackNamespace& track_namespace,
+                                    std::vector<Parameter> parameters = {});
+```
+
+`encode_subscribe()` uses the separate `request_id` argument. Parameter encoding
+can throw `std::invalid_argument` for unsupported or duplicate parameters.
+Wire encoders are building blocks; they do not establish session state or send bytes.
+
+## Control decoders
+
+Pass a control message's **payload**, after stripping its framing:
+
+```cpp
+bool decode_setup(const ByteBuffer& payload, std::string& error);
+std::optional<Subscribe> decode_subscribe(const ByteBuffer& payload, std::string& error);
+std::optional<SubscribeOk> decode_subscribe_ok(const ByteBuffer& payload, std::string& error);
+std::optional<RequestUpdateMessage> decode_request_update(const ByteBuffer& payload,
+                                                         std::string& error);
+std::optional<RequestOk> decode_request_ok(const ByteBuffer& payload, std::string& error);
+std::optional<RequestError> decode_request_error(const ByteBuffer& payload, std::string& error);
+std::optional<PublishDone> decode_publish_done(const ByteBuffer& payload, std::string& error);
+bool decode_subscription_options(const std::vector<Parameter>& parameters,
+                                  SubscriptionOptions& options, std::string& error);
+```
+
+Optional-returning decoders return `std::nullopt` and set `error` on failure.
+Boolean decoders return `false` and set `error`. Read `error` only on failure.
+`decode_setup()` validates encoding; it does not return the peer's options.
+
+| Codec record | Fields |
+| --- | --- |
+| `Subscribe` | `RequestId request_id`, `TrackNamespace track_namespace`, `TrackName track_name`, `std::vector<Parameter> parameters` |
+| `SubscribeOk` | `TrackAlias track_alias`, `std::vector<Parameter> parameters`, `ObjectProperties track_properties` |
+| `RequestUpdateMessage` | `RequestId request_id`, `std::vector<Parameter> parameters` |
+| `SubscriptionFilter` | `uint64_t filter_type` (default LargestObject), `Location start`, `uint64_t end_group_delta` |
+| `SubscriptionOptions` | Optional `uint8_t` fields `forward`, `subscriber_priority`, `group_order`; optional `SubscriptionFilter filter`; optional `uint64_t` fields `subgroup_delivery_timeout`, `object_delivery_timeout`, `new_group_request` |
+
+Absent options mean that the parameter was not present. Start with a fresh
+`SubscriptionOptions{}` for each decode. Decode the wire message first, then
+validate its parameters with `decode_subscription_options()`; an invalid option
+value is treated as a protocol violation by the publisher session.
+
+## Data-plane encoders
+
+```cpp
+ByteBuffer encode_object_datagram(TrackAlias track_alias, GroupId group_id,
+                                  ObjectId object_id, uint8_t priority,
+                                  BytesView properties,
+                                  const std::optional<ObjectStatusCode>& status,
+                                  BytesView payload, bool end_of_group);
+void encode_subgroup_header(ByteBuffer& out, TrackAlias track_alias,
+                            GroupId group_id, SubgroupId subgroup_id, uint8_t priority);
+void encode_subgroup_object(ByteBuffer& out, uint64_t object_id_delta,
+                            BytesView properties,
+                            const std::optional<ObjectStatusCode>& status,
+                            BytesView payload);
+void write_track_namespace(ByteBuffer& out, const TrackNamespace& name_space);
+bool is_subgroup_stream_type(uint64_t type);
+```
+
+The datagram encoder returns a whole datagram. If `status` is set, it writes
+status instead of payload. The subgroup helpers append to `out`; append one
+header per stream, then its objects. `object_id_delta` is the first object's ID,
+or `current_id - previous_id - 1` for subsequent objects. A set status (or an
+empty payload) takes the subgroup status encoding path.
+
+`write_track_namespace()` validates field count, nonempty fields, and total
+field size. `is_subgroup_stream_type()` classifies a wire stream type; it does
+not parse an entire stream. The receive data-plane parser is internal and is
+not exposed as a standalone public decoder.
+
+## Constants
+
+| Stream / datagram constant | Value |
+| --- | --- |
+| `kSetupStreamType` | `0x2f00` |
+| `kFetchStreamType` | `0x05` |
+| `kPaddingStreamType` | `0x132b3e28` |
+| `kPaddingDatagramType` | `0x132b3e29` |
+
+| Control message constant | Value |
+| --- | --- |
+| `kMessageRequestUpdate` | `0x02` |
+| `kMessageSubscribe` | `0x03` |
+| `kMessageSubscribeOk` | `0x04` |
+| `kMessageRequestError` | `0x05` |
+| `kMessagePublishNamespace` | `0x06` |
+| `kMessageRequestOk` | `0x07` |
+| `kMessagePublishDone` | `0x0b` |
+| `kMessageTrackStatus` | `0x0d` |
+| `kMessageGoAway` | `0x10` |
+| `kMessageFetch` | `0x16` |
+| `kMessagePublish` | `0x1d` |
+| `kMessageSetup` | `0x2f00` |
+| `kMessageSubscribeNamespace` | `0x50` |
+| `kMessageSubscribeTracks` | `0x51` |
+
+`SetupOption` values are `None = 0x00`, `Path = 0x01`, `Authority = 0x05`, and
+`MoqtImplementation = 0x07`. `None` is an internal placeholder, not a wire option.
+
+Parameter and filter constants are listed in [Types & ownership](../types/#parameters).
+Object status constants are listed in [Publisher](../publisher/#streams-and-datagrams).
+A declared constant does not imply that the session API supports sending that request.

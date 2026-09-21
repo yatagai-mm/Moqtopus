@@ -1,0 +1,57 @@
+---
+import '../styles/docs.css';
+
+const { frontmatter, headings = [] } = Astro.props;
+const pages = [
+  ['/', 'Overview'],
+  ['/getting-started/', 'Getting started'],
+  ['/configuration/', 'Configuration'],
+  ['/subscriber/', 'Subscriber'],
+  ['/publisher/', 'Publisher'],
+  ['/types/', 'Types & ownership'],
+  ['/errors/', 'Errors & lifecycle'],
+  ['/codec/', 'Codec'],
+];
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const current = Astro.url.pathname.replace(/\/$/, '') || '/';
+const title = `${frontmatter.title} · Moqtopus`;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={frontmatter.description} />
+    <title>{title}</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to content</a>
+    <header>
+      <a class="brand" href={`${base}/`}>Moqtopus<span>C++ API</span></a>
+      <span class="edition">Media over QUIC · draft-18</span>
+    </header>
+    <div class="shell">
+      <nav aria-label="Documentation">
+        <p class="nav-label">Documentation</p>
+        <ul>
+          {pages.map(([href, label]) => (
+            <li><a href={`${base}${href}`} aria-current={current === (`${base}${href}`.replace(/\/$/, '') || '/') ? 'page' : undefined}>{label}</a></li>
+          ))}
+        </ul>
+      </nav>
+      <main id="content" tabindex="-1">
+        <div class="eyebrow">Moqtopus / Documentation</div>
+        <h1>{frontmatter.title}</h1>
+        <p class="lead">{frontmatter.description}</p>
+        <article><slot /></article>
+        <footer>Reference for the public headers in <code>include/moq/</code>.</footer>
+      </main>
+      <aside aria-label="On this page">
+        <p class="nav-label">On this page</p>
+        <ul>{headings.filter((heading) => heading.depth === 2).map((heading) => (
+          <li><a href={`#${heading.slug}`}>{heading.text}</a></li>
+        ))}</ul>
+      </aside>
+    </div>
+  </body>
+</html>

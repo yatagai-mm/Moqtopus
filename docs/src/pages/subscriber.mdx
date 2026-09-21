@@ -1,0 +1,148 @@
+---
+layout: ../layouts/Docs.astro
+title: Subscriber
+description: Receive track objects, change subscription parameters, and stop delivery.
+---
+
+Include `moq/subscriber_session.h`. A `MoqSubscriberSession` owns the connection;
+each successful subscription returns a lightweight `SubscriptionHandle`.
+
+## Receive objects
+
+This program connects to a local test relay, subscribes for ten seconds, and
+prints object sizes. Start a publisher for the same namespace and track first.
+
+```cpp
+#include <moq/subscriber_session.h>
+#include <chrono>
+#include <exception>
+#include <iostream>
+#include <memory>
+#include <thread>
+#include <utility>
+
+class Handler final : public moq::ObjectHandler {
+public:
+  void on_object(const moq::Object& object) override {
+    std::cout << object.group_id << '/' << object.object_id
+              << ": " << object.payload.size << " bytes\n";
+    // Copy payload and properties here if they must outlive this callback.
+  }
+  void on_publish_done(moq::PublishDone done) override {
+    std::cout << "Track finished: " << done.reason << '\n';
+  }
+  void on_error(moq::ReceiveError error) override {
+    std::cerr << "Receive error: " << error.message << '\n';
+  }
+};
+
+int main() {
+  try {
+    moq::MsQuicClientConfig config;
+    config.host = "localhost";
+    config.port = 4433;
+    config.disable_certificate_validation = true; // Local test relay only.
+
+    auto session = moq::MoqSubscriberSession::connect(config).get();
+    session->ready().get();
+
+    moq::SubscribeRequest request;
+    request.track_namespace = {"camera", "front"};
+    request.track_name = "video";
+    auto handle = session->subscribe(std::move(request),
+                                     std::make_shared<Handler>()).get();
+
+    std::this_thread::sleep_for(std::chrono::seconds(10));
+    session->stop_subscription(handle.request_id()).get();
+    session->close();
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return 1;
+  }
+}
+```
+
+## Session methods
+
+| Method | Return type | Behavior |
+| --- | --- | --- |
+| `connect(MsQuicClientConfig, SubscriberConfig = {})` | `std::future<std::unique_ptr<MoqSubscriberSession>>` | Static factory; creates the session and starts the transport. |
+| `ready()` | `std::future<void>` | Completes when SETUP succeeds; fails if the session closes first. |
+| `state() const` | `SessionStateSnapshot` | Returns a copy of the current session state. |
+| `subscribe(SubscribeRequest, std::shared_ptr<ObjectHandler>)` | `std::future<SubscriptionHandle>` | Resolves on SUBSCRIBE_OK; rejects on request failure. |
+| `request_update(RequestId, RequestUpdate)` | `std::future<RequestOk>` | Updates an established subscription identified by its original request ID. |
+| `stop_subscription(RequestId)` | `std::future<void>` | Cancels the local subscription and its request stream. An unknown ID is a no-op. |
+| `close(SessionCloseErrorCode = SessionCloseErrorCode::NoError)` | `void` | Begins session shutdown. |
+
+The session is non-copyable. Destruction closes it and drains transport callbacks.
+`stop_subscription()` completes after local cancellation; it is not an
+acknowledgment from the peer.
+
+## SubscribeRequest
+
+| Field | Type | Usage |
+| --- | --- | --- |
+| `request_id` | `std::optional<RequestId>` | Leave unset. The session allocates IDs and rejects explicit values. |
+| `track_namespace` | `TrackNamespace` | Namespace fields, e.g. `{"camera", "front"}`. |
+| `track_name` | `TrackName` | Track name within that namespace. |
+| `parameters` | `std::vector<Parameter>` | Optional wire parameters; empty by default. |
+
+Calling `subscribe()` before readiness or with a null handler fails its future.
+A peer rejection is reported as `RequestRejected` when you call `.get()`.
+
+## ObjectHandler
+
+Implement all three virtual methods from `moq/object_handler.h`:
+
+| Callback | Purpose |
+| --- | --- |
+| `on_object(const Object&)` | Receives one object and its metadata. Payload and properties are borrowed. |
+| `on_publish_done(PublishDone)` | Receives the peer's terminal PUBLISH_DONE status, stream count, and reason. |
+| `on_error(ReceiveError)` | Reports receive or subscription errors with a numeric code and message. |
+
+`on_object()` runs synchronously on the transport thread. Keep it short, do not
+let exceptions escape, and copy borrowed bytes before retaining them. Do not
+block in callbacks on session futures or destroy the session there; dispatch
+that work to application code. Synchronize any state shared with your application
+thread.
+
+The subscriber API does not declare the publisher's all-calls-thread-safe
+guarantee. Avoid concurrent subscriber control calls and callback re-entry into
+control methods. Snapshot reads are protected by the implementation's snapshot
+mutex; this is not a blanket concurrency guarantee for the session.
+
+## SubscriptionHandle
+
+| Method | Return type | Meaning |
+| --- | --- | --- |
+| `request_id() const` | `RequestId` | Original subscription request ID. |
+| `track_alias() const` | `std::optional<TrackAlias>` | Alias from the current snapshot, if available. |
+| `state() const` | `SubscriptionStateSnapshot` | Phase, request ID, alias, and number of pending updates. |
+
+The handle stores a weak reference to the session. Destroying a handle does not
+cancel its subscription or keep the session alive. If the session is gone,
+`state()` reports `Terminated` with no alias. A default-constructed handle is not
+an active subscription.
+
+## Update a subscription
+
+Use the original handle's request ID. The session assigns a new wire request ID
+to each update. The following helper pauses forwarding:
+
+```cpp
+#include <moq/codec.h>
+#include <moq/subscriber_session.h>
+#include <utility>
+
+moq::RequestOk pause_forwarding(moq::MoqSubscriberSession& session,
+                                const moq::SubscriptionHandle& handle) {
+  moq::RequestUpdate update;
+  update.parameters.push_back(
+      moq::Parameter::uint8(moq::codec::kParameterForward, 0));
+  return session.request_update(handle.request_id(), std::move(update)).get();
+}
+```
+
+Set FORWARD to `1` to resume. Updates require an established subscription and
+can fail independently; inspect the future and the
+[subscription phase](../errors/#subscription-state).
