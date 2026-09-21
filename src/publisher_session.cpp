@@ -6,7 +6,10 @@
 #include "send_data_plane.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <exception>
+#include <fstream>
 #include <future>
 #include <mutex>
 #include <spdlog/spdlog.h>
@@ -52,6 +55,20 @@ std::string namespace_text(const TrackNamespace &track_namespace) {
     text += field;
   }
   return text;
+}
+
+std::string csv_field(const std::string &value) {
+  std::string escaped;
+  escaped.reserve(value.size() + 2);
+  escaped.push_back('"');
+  for (const char character : value) {
+    if (character == '"') {
+      escaped.push_back('"');
+    }
+    escaped.push_back(character);
+  }
+  escaped.push_back('"');
+  return escaped;
 }
 
 // Sink for the bidi stream carrying a PUBLISH_NAMESPACE announcement. The
@@ -106,7 +123,18 @@ public:
             [this](ByteBuffer bytes) { return transport_ && transport_->send_datagram(std::move(bytes)); },
             [this](RequestId request_id, PublishDoneCode code, std::string reason) {
               complete_subscription(request_id, code, std::move(reason));
-            }}) {}
+            }}) {
+    const char *event_csv_path = std::getenv("MOQTOPUS_PUBLISHER_EVENT_CSV");
+    if (event_csv_path != nullptr && event_csv_path[0] != '\0') {
+      event_csv_.open(event_csv_path, std::ios::out | std::ios::trunc);
+      if (event_csv_) {
+        event_csv_ << "timestamp_ns,sequence,event,request_id,track_namespace,track_name,error_code,detail\n";
+        event_csv_.flush();
+      } else {
+        spdlog::warn("failed to open publisher event CSV at {}", event_csv_path);
+      }
+    }
+  }
 
   ~PublisherSessionImpl() override { close(SessionCloseErrorCode::NoError); }
 
@@ -287,6 +315,12 @@ public:
 
   SendDataPlane &send_plane() override { return send_plane_; }
 
+  void subscription_transport_event(RequestId request_id, const TrackNamespace &track_namespace,
+                                    const TrackName &track_name, const std::string &event,
+                                    uint64_t error_code) override {
+    record_subscription_event(event, request_id, track_namespace, track_name, std::to_string(error_code), {});
+  }
+
   void subscription_closed(RequestId subscribe_request_id) override {
     subscriptions_.erase(subscribe_request_id);
   }
@@ -382,6 +416,8 @@ private:
       begin_close(SessionCloseErrorCode::ProtocolViolation, std::move(error));
       return;
     }
+    record_subscription_event("SUBSCRIBE_RECEIVED", subscribe->request_id, subscribe->track_namespace,
+                              subscribe->track_name, {}, {});
     if (!consume_peer_request_id(subscribe->request_id, error)) {
       begin_close(SessionCloseErrorCode::InvalidRequestId, std::move(error));
       return;
@@ -392,7 +428,9 @@ private:
       return;
     }
 
-    const auto reject = [&stream](RequestErrorCode code, const std::string &reason) {
+    const auto reject = [this, &stream, &subscribe](RequestErrorCode code, const std::string &reason) {
+      record_subscription_event("SUBSCRIBE_REJECTED", subscribe->request_id, subscribe->track_namespace,
+                                subscribe->track_name, std::to_string(static_cast<uint64_t>(code)), reason);
       spdlog::debug("rejecting SUBSCRIBE: code={} reason={}", static_cast<uint64_t>(code), reason);
       stream->send(codec::encode_request_error(code, reason), true);
       stream->abort_receive(static_cast<uint64_t>(StreamResetCode::Cancelled));
@@ -414,6 +452,8 @@ private:
     if (!decision.ok) {
       return reject(decision.code, decision.reason);
     }
+    record_subscription_event("SUBSCRIBE_ACCEPTED", subscribe->request_id, subscribe->track_namespace,
+                              subscribe->track_name, {}, {});
 
     auto fsm = std::make_shared<PublisherSubscriptionFSM>(subscribe->request_id, subscribe->track_namespace,
                                                           subscribe->track_name, track_alias, stream,
@@ -453,6 +493,21 @@ private:
       const auto fsm = found->second; // finish() erases the map entry
       fsm->finish(code, reason);
     }
+  }
+
+  void record_subscription_event(const std::string &event, RequestId request_id,
+                                 const TrackNamespace &track_namespace, const TrackName &track_name,
+                                 const std::string &error_code, const std::string &detail) {
+    if (!event_csv_) {
+      return;
+    }
+    const auto timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::system_clock::now().time_since_epoch())
+                                  .count();
+    event_csv_ << timestamp_ns << ',' << event_sequence_++ << ',' << csv_field(event) << ',' << request_id << ','
+               << csv_field(namespace_text(track_namespace)) << ',' << csv_field(track_name) << ','
+               << csv_field(error_code) << ',' << csv_field(detail) << '\n';
+    event_csv_.flush();
   }
 
   std::shared_ptr<StreamContext> open_data_stream() {
@@ -518,6 +573,8 @@ private:
   std::unordered_map<RequestId, std::shared_ptr<PublisherSubscriptionFSM>> subscriptions_;
   std::vector<TrackNamespace> pending_announcements_;
   std::unordered_map<std::string, std::shared_ptr<StreamContext>> announced_namespaces_;
+  std::ofstream event_csv_;
+  uint64_t event_sequence_ = 0;
 
   // Destroyed first: its destructor waits for in-flight transport callbacks,
   // which still reference the members above.

@@ -23,6 +23,9 @@ public:
   virtual void invalid_request_id(std::string error) = 0;
   virtual bool consume_peer_request_id(RequestId request_id, std::string &error) = 0;
   virtual SendDataPlane &send_plane() = 0;
+  virtual void subscription_transport_event(RequestId request_id, const TrackNamespace &track_namespace,
+                                            const TrackName &track_name, const std::string &event,
+                                            uint64_t error_code) = 0;
   virtual void subscription_closed(RequestId subscribe_request_id) = 0;
 };
 

@@ -33,6 +33,8 @@ void PublisherSubscriptionFSM::on_peer_send_aborted(uint64_t error_code) {
     return;
   }
   const auto lock = owner->lock_session();
+  owner->subscription_transport_event(request_id_, track_namespace_, track_name_, "RESET_STREAM_RECEIVED",
+                                      error_code);
   spdlog::debug("subscriber reset request stream for request {} (error {})", request_id_, error_code);
   cancel(static_cast<uint64_t>(StreamResetCode::Cancelled));
 }
@@ -43,6 +45,8 @@ void PublisherSubscriptionFSM::on_peer_receive_aborted(uint64_t error_code) {
     return;
   }
   const auto lock = owner->lock_session();
+  owner->subscription_transport_event(request_id_, track_namespace_, track_name_, "STOP_SENDING_RECEIVED",
+                                      error_code);
   spdlog::debug("subscriber sent STOP_SENDING for request {} (error {})", request_id_, error_code);
   cancel(static_cast<uint64_t>(StreamResetCode::Cancelled));
 }
