@@ -49,22 +49,6 @@ Example:
 ./build/subscriber localhost 4433 camera/front video /
 ```
 
-## Subscriber flow
-![sub](./static/data-flow-new.svg)
-
-## API simplification
-
-`connect()` now returns a `std::unique_ptr` directly and throws on startup failure;
-remove `.get()` from factory calls. Continue to wait on `ready().get()` for SETUP.
-`stop_subscription()` is synchronous and returns `void`.
-
-Draft-18 fixes the ALPN to `moqt-18`. `SubscribeRequest::request_id`, the unused
-`PublishedTrack` priority/order defaults, and unused `SubscriptionOptions` fields
-have been removed. `PublishedObject::subgroup_id` is an integer defaulting to zero.
-The codec now returns frames through `encode_control_message()`;
-`encode_request_ok()` takes only parameters, and `encode_publish_namespace()`
-takes only the request ID and namespace.
-
 ## Tests
 
 ```sh
