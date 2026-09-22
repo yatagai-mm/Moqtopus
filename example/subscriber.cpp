@@ -15,8 +15,6 @@
 #include <string>
 #include <thread>
 
-namespace {
-
 std::atomic_bool interrupted{false};
 
 const char *DeliveryName(moq::DeliveryKind delivery) {
@@ -97,8 +95,6 @@ void Usage(const char *argv0) {
   spdlog::error("usage: {} <host> <port> <namespace[/field...]> <track-name> [path]", argv0);
   spdlog::error("example: {} localhost 4433 camera/front video /", argv0);
 }
-
-} // namespace
 
 int main(int argc, char **argv) {
   if (const char *env_level = std::getenv("LOG_LEVEL")) {

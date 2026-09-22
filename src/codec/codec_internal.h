@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-namespace moq::codec::detail {
+namespace moq::codec {
 
 struct Cursor {
   BytesView bytes;
@@ -183,4 +183,4 @@ inline void encode_parameters(ByteBuffer &payload, std::vector<Parameter> parame
   }
 }
 
-} // namespace moq::codec::detail
+} // namespace moq::codec

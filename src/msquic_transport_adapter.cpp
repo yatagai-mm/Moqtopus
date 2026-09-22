@@ -27,15 +27,11 @@ std::string quic_status_string(QUIC_STATUS status) {
   }
 }
 
-namespace {
-
-void throw_if_failed(QUIC_STATUS status, const char *what) {
+static void throw_if_failed(QUIC_STATUS status, const char *what) {
   if (QUIC_FAILED(status)) {
     throw std::runtime_error(std::string(what) + " failed: " + quic_status_string(status));
   }
 }
-
-} // namespace
 
 MsQuicTransportAdapter::MsQuicTransportAdapter(MsQuicClientConfig config, Callbacks callbacks)
     : config_(std::move(config)), callbacks_(std::move(callbacks)) {

@@ -18,8 +18,6 @@
 #include <utility>
 #include <vector>
 
-namespace {
-
 using Clock = std::chrono::steady_clock;
 
 constexpr std::chrono::seconds kSetupTimeout{2};
@@ -283,8 +281,6 @@ void PrintResult(size_t number, const std::string &name, const TestResult &resul
   }
   std::cout << "  ...\n";
 }
-
-} // namespace
 
 int main(int argc, char **argv) {
   try {

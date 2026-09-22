@@ -20,20 +20,18 @@ ByteBuffer encode_setup(std::string authority, std::string path) {
 }
 
 bool decode_setup(const ByteBuffer &payload, std::string &error) {
-  return detail::decode<bool>(payload, error,
-                              [](detail::Reader &reader, bool &) {
-                                uint64_t type = 0;
-                                while (reader.remaining()) {
-                                  const auto delta = reader.varint();
-                                  detail::Reader::require(delta <= std::numeric_limits<uint64_t>::max() - type,
-                                                          "SETUP option type overflow");
-                                  type += delta;
-                                  if (type & 1)
-                                    reader.string(65535);
-                                  else
-                                    reader.varint();
-                                }
-                              })
+  return decode<bool>(payload, error, [](Reader &reader, bool &) {
+    uint64_t type = 0;
+    while (reader.remaining()) {
+      const auto delta = reader.varint();
+      Reader::require(delta <= std::numeric_limits<uint64_t>::max() - type, "SETUP option type overflow");
+      type += delta;
+      if (type & 1)
+        reader.string(65535);
+      else
+        reader.varint();
+    }
+  })
       .has_value();
 }
 
@@ -43,13 +41,13 @@ ByteBuffer encode_subscribe(RequestId request_id, const SubscribeRequest &reques
   write_track_namespace(payload, request.track_namespace);
   write_varint(payload, request.track_name.size());
   payload.insert(payload.end(), request.track_name.begin(), request.track_name.end());
-  detail::encode_parameters(payload, request.parameters);
+  encode_parameters(payload, request.parameters);
 
   return encode_control_message(kMessageSubscribe, payload);
 }
 
 std::optional<Subscribe> decode_subscribe(const ByteBuffer &payload, std::string &error) {
-  return detail::decode<Subscribe>(payload, error, [](detail::Reader &reader, Subscribe &value) {
+  return decode<Subscribe>(payload, error, [](Reader &reader, Subscribe &value) {
     value.request_id = reader.varint();
     value.track_namespace = reader.track_namespace();
     value.track_name = reader.string(4096);
@@ -60,31 +58,30 @@ std::optional<Subscribe> decode_subscribe(const ByteBuffer &payload, std::string
 bool decode_subscription_options(const std::vector<Parameter> &parameters, SubscriptionOptions &options,
                                  std::string &error) {
   for (const auto &parameter : parameters) {
-    const auto parsed = detail::decode<bool>(parameter.encoded_value, error, [&](detail::Reader &reader, bool &) {
+    const auto parsed = decode<bool>(parameter.encoded_value, error, [&](Reader &reader, bool &) {
       switch (parameter.type) {
       case kParameterForward:
         options.forward = reader.byte();
-        detail::Reader::require(*options.forward <= 1, "invalid FORWARD parameter");
+        Reader::require(*options.forward <= 1, "invalid FORWARD parameter");
         break;
       case kParameterGroupOrder: {
         const auto order = reader.byte();
-        detail::Reader::require(order == 1 || order == 2, "invalid GROUP_ORDER parameter");
+        Reader::require(order == 1 || order == 2, "invalid GROUP_ORDER parameter");
         break;
       }
       case kParameterSubscriptionFilter: {
         const auto size = reader.varint();
-        detail::Reader::require(size == reader.remaining(), "invalid SUBSCRIPTION_FILTER length");
+        Reader::require(size == reader.remaining(), "invalid SUBSCRIPTION_FILTER length");
         SubscriptionFilter filter;
         filter.filter_type = reader.varint();
-        detail::Reader::require(filter.filter_type >= kFilterNextGroupStart &&
-                                    filter.filter_type <= kFilterAbsoluteRange,
-                                "unknown subscription filter type");
+        Reader::require(filter.filter_type >= kFilterNextGroupStart && filter.filter_type <= kFilterAbsoluteRange,
+                        "unknown subscription filter type");
         if (filter.filter_type >= kFilterAbsoluteStart)
           filter.start = {reader.varint(), reader.varint()};
         if (filter.filter_type == kFilterAbsoluteRange)
           filter.end_group_delta = reader.varint();
-        detail::Reader::require(filter.end_group_delta <= std::numeric_limits<uint64_t>::max() - filter.start.group,
-                                "SUBSCRIPTION_FILTER End Group overflows");
+        Reader::require(filter.end_group_delta <= std::numeric_limits<uint64_t>::max() - filter.start.group,
+                        "SUBSCRIPTION_FILTER End Group overflows");
         options.filter = filter;
         break;
       }
@@ -106,7 +103,7 @@ bool decode_subscription_options(const std::vector<Parameter> &parameters, Subsc
 }
 
 std::optional<SubscribeOk> decode_subscribe_ok(const ByteBuffer &payload, std::string &error) {
-  return detail::decode<SubscribeOk>(payload, error, [](detail::Reader &reader, SubscribeOk &value) {
+  return decode<SubscribeOk>(payload, error, [](Reader &reader, SubscribeOk &value) {
     value.track_alias = reader.varint();
     reader.parameters(value.parameters);
     value.track_properties = reader.view(reader.remaining()).to_owned();
@@ -117,7 +114,7 @@ ByteBuffer encode_subscribe_ok(TrackAlias track_alias, std::vector<Parameter> pa
                                const ObjectProperties &track_properties) {
   ByteBuffer payload;
   write_varint(payload, track_alias);
-  detail::encode_parameters(payload, std::move(parameters));
+  encode_parameters(payload, std::move(parameters));
   payload.insert(payload.end(), track_properties.begin(), track_properties.end());
   return encode_control_message(kMessageSubscribeOk, payload);
 }
@@ -125,19 +122,19 @@ ByteBuffer encode_subscribe_ok(TrackAlias track_alias, std::vector<Parameter> pa
 ByteBuffer encode_request_update(RequestId request_id, const RequestUpdate &update) {
   ByteBuffer payload;
   write_varint(payload, request_id);
-  detail::encode_parameters(payload, update.parameters);
+  encode_parameters(payload, update.parameters);
   return encode_control_message(kMessageRequestUpdate, payload);
 }
 
 std::optional<RequestUpdateMessage> decode_request_update(const ByteBuffer &payload, std::string &error) {
-  return detail::decode<RequestUpdateMessage>(payload, error, [](detail::Reader &reader, RequestUpdateMessage &value) {
+  return decode<RequestUpdateMessage>(payload, error, [](Reader &reader, RequestUpdateMessage &value) {
     value.request_id = reader.varint();
     reader.parameters(value.parameters);
   });
 }
 
 std::optional<RequestOk> decode_request_ok(const ByteBuffer &payload, std::string &error) {
-  return detail::decode<RequestOk>(payload, error, [](detail::Reader &reader, RequestOk &value) {
+  return decode<RequestOk>(payload, error, [](Reader &reader, RequestOk &value) {
     reader.parameters(value.parameters);
     value.track_properties = reader.view(reader.remaining()).to_owned();
   });
@@ -145,7 +142,7 @@ std::optional<RequestOk> decode_request_ok(const ByteBuffer &payload, std::strin
 
 ByteBuffer encode_request_ok(std::vector<Parameter> parameters) {
   ByteBuffer payload;
-  detail::encode_parameters(payload, std::move(parameters));
+  encode_parameters(payload, std::move(parameters));
   return encode_control_message(kMessageRequestOk, payload);
 }
 
@@ -159,7 +156,7 @@ ByteBuffer encode_request_error(RequestErrorCode code, std::string reason, uint6
 }
 
 std::optional<RequestError> decode_request_error(const ByteBuffer &payload, std::string &error) {
-  return detail::decode<RequestError>(payload, error, [](detail::Reader &reader, RequestError &value) {
+  return decode<RequestError>(payload, error, [](Reader &reader, RequestError &value) {
     value.code = static_cast<RequestErrorCode>(reader.varint());
     value.retry_interval = reader.varint();
     value.reason = reader.string(1024);
@@ -170,7 +167,7 @@ std::optional<RequestError> decode_request_error(const ByteBuffer &payload, std:
 }
 
 std::optional<PublishDone> decode_publish_done(const ByteBuffer &payload, std::string &error) {
-  return detail::decode<PublishDone>(payload, error, [](detail::Reader &reader, PublishDone &value) {
+  return decode<PublishDone>(payload, error, [](Reader &reader, PublishDone &value) {
     value.status_code = reader.varint();
     value.stream_count = reader.varint();
     value.reason = reader.string(1024);

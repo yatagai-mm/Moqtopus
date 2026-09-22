@@ -12,8 +12,6 @@
 #include <string>
 #include <thread>
 
-namespace {
-
 std::atomic_bool interrupted{false};
 
 void HandleSignal(int) { interrupted.store(true); }
@@ -22,8 +20,6 @@ void Usage(const char *argv0) {
   spdlog::error("usage: {} <host> <port> <namespace[/field...]> <track-name> [path] [stream|datagram]", argv0);
   spdlog::error("example: {} localhost 4433 camera/front video / stream", argv0);
 }
-
-} // namespace
 
 int main(int argc, char **argv) {
   if (const char *env_level = std::getenv("LOG_LEVEL")) {

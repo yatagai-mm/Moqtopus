@@ -10,21 +10,20 @@
 #include <utility>
 
 namespace moq::detail {
-namespace {
 
 constexpr uint64_t kNormalStatus = 0x0;
 constexpr uint64_t kEndOfGroupStatus = 0x3;
 constexpr uint64_t kEndOfTrackStatus = 0x4;
 
-bool is_valid_object_status(uint64_t status) {
+static bool is_valid_object_status(uint64_t status) {
   return status == kNormalStatus || status == kEndOfGroupStatus || status == kEndOfTrackStatus;
 }
 
 using Parse = codec::DecodeStatus;
-using Cursor = codec::detail::Cursor;
+using Cursor = codec::Cursor;
 
 // object properties: varint length + opaque bytes
-Parse read_properties(Cursor &cursor, bool require_non_empty, BytesView &properties) {
+static Parse read_properties(Cursor &cursor, bool require_non_empty, BytesView &properties) {
   uint64_t length = 0;
   if (!cursor.read_varint(length)) {
     return Parse::NeedMoreData;
@@ -244,8 +243,6 @@ private:
   uint8_t publisher_priority_ = 128;
   std::optional<ObjectId> last_object_id_;
 };
-
-} // namespace
 
 DataPlane::DataPlane(SubscriberConfig config, ProtocolErrorCallback protocol_error, TrackErrorCallback track_error)
     : protocol_error(std::move(protocol_error)), track_error(std::move(track_error)), config_(std::move(config)) {}

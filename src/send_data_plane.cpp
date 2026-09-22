@@ -5,13 +5,12 @@
 #include <utility>
 
 namespace moq::detail {
-namespace {
 
-bool location_less(const Location &left, const Location &right) {
+static bool location_less(const Location &left, const Location &right) {
   return left.group < right.group || (left.group == right.group && left.object < right.object);
 }
 
-bool valid_publish_status(const PublishedObject &object) {
+static bool valid_publish_status(const PublishedObject &object) {
   if (!object.status) {
     return true;
   }
@@ -22,9 +21,7 @@ bool valid_publish_status(const PublishedObject &object) {
   return *object.status == codec::kObjectStatusNormal || object.payload.empty();
 }
 
-bool nonzero(const std::optional<uint64_t> &value) { return value && *value != 0; }
-
-} // namespace
+static bool nonzero(const std::optional<uint64_t> &value) { return value && *value != 0; }
 
 SendDataPlane::SendDataPlane(Callbacks callbacks) : callbacks_(std::move(callbacks)) {}
 

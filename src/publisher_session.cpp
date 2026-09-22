@@ -21,13 +21,12 @@
 #include <string>
 
 namespace moq::detail {
-namespace {
 
-bool reserved_namespace(const TrackNamespace &track_namespace) {
+static bool reserved_namespace(const TrackNamespace &track_namespace) {
   return !track_namespace.empty() && track_namespace.front() == ".";
 }
 
-std::string namespace_text(const TrackNamespace &track_namespace) {
+static std::string namespace_text(const TrackNamespace &track_namespace) {
   std::string text;
   for (const std::string &field : track_namespace) {
     if (!text.empty()) {
@@ -76,8 +75,6 @@ private:
   std::string name_;
   ByteBuffer buffer_;
 };
-
-} // namespace
 
 class Publisher : public std::enable_shared_from_this<Publisher>, public Session {
   class PublisherSubscriptionFSM final : public StreamSink {
