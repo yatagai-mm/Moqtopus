@@ -1,13 +1,12 @@
 #pragma once
 
-#include "moq/client_config.h"
-#include "moq/errors.h"
 #include "moq/object_handler.h"
+#include "moq/session.h"
 #include "moq/types.h"
 
 #include <future>
 #include <memory>
-#include <utility>
+#include <unordered_map>
 
 namespace moq {
 
@@ -23,37 +22,42 @@ struct SubscriberConfig {
   size_t max_buffered_datagram_bytes = 256 * 1024;
 };
 
-namespace detail {
-class Subscriber;
-}
+class DataPlane;
 
 struct Subscription {
   RequestId request_id = 0;
   TrackAlias track_alias = 0;
 };
 
-class Subscriber {
+class Subscriber final : private Session {
 public:
-  ~Subscriber();
-
-  Subscriber(const Subscriber &) = delete;
-  Subscriber &operator=(const Subscriber &) = delete;
+  ~Subscriber() override;
 
   static std::unique_ptr<Subscriber> connect(MsQuicClientConfig msquic_config, SubscriberConfig subscriber_config = {});
 
-  std::future<void> ready();
-  SessionStateSnapshot state() const;
+  using Session::close;
+  using Session::ready;
+  using Session::state;
 
   std::future<Subscription> subscribe(SubscribeRequest request, std::shared_ptr<ObjectHandler> handler);
   SubscriptionStateSnapshot subscription_state(RequestId request_id) const;
   std::future<RequestOk> request_update(RequestId existing_request_id, RequestUpdate update);
   void stop_subscription(RequestId request_id);
-  void close(SessionCloseErrorCode error = SessionCloseErrorCode::NoError);
 
 private:
-  explicit Subscriber(std::shared_ptr<detail::Subscriber> impl) : impl_(std::move(impl)) {}
+  class SubscriptionFSM;
+  Subscriber(MsQuicClientConfig msquic_config, SubscriberConfig subscriber_config);
+  void handle_data_stream(uint64_t type, const std::shared_ptr<StreamContext> &stream, ByteBuffer prefix,
+                          bool fin) override;
+  void handle_peer_request(const codec::ControlMessage &message, const std::shared_ptr<StreamContext> &stream,
+                           ByteBuffer leftover, bool fin) override;
+  void stop_subscription_now(RequestId request_id, std::string reason, uint64_t stream_error_code = 0);
+  void on_datagram(BytesView bytes) override;
+  void terminate_subscriptions(const std::string &reason) override;
+  size_t active_subscriptions() const override;
 
-  std::shared_ptr<detail::Subscriber> impl_;
+  std::unique_ptr<DataPlane> data_plane_;
+  std::unordered_map<RequestId, std::shared_ptr<SubscriptionFSM>> subscriptions_;
 };
 
 } // namespace moq

@@ -22,7 +22,7 @@ Stream &Connection::peer_stream(bool unidirectional) {
 }
 } // namespace fake
 
-namespace moq::detail {
+namespace moq {
 std::string quic_status_string(QUIC_STATUS) { return "fake transport failure"; }
 
 MsQuicTransportAdapter::MsQuicTransportAdapter(MsQuicClientConfig, Callbacks callbacks)
@@ -90,4 +90,4 @@ void MsQuicTransportAdapter::shutdown(SessionCloseErrorCode code) {
   callbacks_.shutdown_complete(true);
 }
 void MsQuicTransportAdapter::remove_stream(StreamContext *stream) { streams_.erase(stream); }
-} // namespace moq::detail
+} // namespace moq

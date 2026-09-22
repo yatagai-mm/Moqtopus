@@ -10,7 +10,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace moq::detail {
+namespace moq {
 
 struct ReceiveRoute {
   RequestId request_id = 0;
@@ -53,4 +53,4 @@ private:
   size_t buffered_datagram_bytes_ = 0;
 };
 
-} // namespace moq::detail
+} // namespace moq

@@ -248,9 +248,80 @@ void edge_tests() {
   }
 }
 
+void lifetime_tests() {
+  // Destruction settles SETUP and SUBSCRIBE futures before draining stream callbacks.
+  {
+    auto session = Subscriber::connect({});
+    auto ready = session->ready();
+    session.reset();
+    assert(fake::connection == nullptr && ready.wait_for(0ms) == std::future_status::ready);
+    bool rejected = false;
+    try {
+      ready.get();
+    } catch (const std::runtime_error &) {
+      rejected = true;
+    }
+    assert(rejected);
+  }
+  {
+    auto session = Subscriber::connect({});
+    setup();
+    auto handler = std::make_shared<Handler>();
+    auto pending = session->subscribe({{"test"}, "track", {}}, handler);
+    fake::connection->peer_stream(true).receive({0xff}); // incomplete stream type
+    session.reset();
+    assert(fake::connection == nullptr && pending.wait_for(0ms) == std::future_status::ready);
+    bool rejected = false;
+    try {
+      (void)pending.get();
+    } catch (const RequestRejected &) {
+      rejected = true;
+    }
+    assert(rejected && handler->errors == 1);
+  }
+  // An active data receiver and an unanswered update may outlive their request-map entry.
+  {
+    auto session = Subscriber::connect({});
+    setup();
+    auto handler = std::make_shared<Handler>();
+    auto pending = session->subscribe({{"test"}, "track", {}}, handler);
+    fake::connection->streams.back()->receive(encode_subscribe_ok(7, {}, {}));
+    auto update = session->request_update(pending.get().request_id, {});
+    ByteBuffer data;
+    encode_subgroup_header(data, 7, 1, 0, 128);
+    encode_subgroup_object(data, 0, {}, {}, ByteBuffer{1, 2});
+    data.pop_back();
+    fake::connection->peer_stream(true).receive(data);
+    session.reset();
+    assert(fake::connection == nullptr && update.wait_for(0ms) == std::future_status::ready);
+    bool rejected = false;
+    try {
+      (void)update.get();
+    } catch (const std::runtime_error &) {
+      rejected = true;
+    }
+    assert(rejected && handler->errors == 1 && handler->ids.empty());
+  }
+  {
+    auto session = Publisher::connect({});
+    setup();
+    session->register_track({{"test"}, "track", {}});
+    fake::connection->peer_stream(false).receive(encode_subscribe(1, {{"test"}, "track", {}}));
+    PublishedObject object;
+    object.track_namespace = {"test"};
+    object.track_name = "track";
+    object.payload = {1, 2};
+    session->publish(object);
+    fake::connection->peer_stream(false).receive({3}); // incomplete peer request
+    session.reset();
+    assert(fake::connection == nullptr);
+  }
+}
+
 int main() {
   codec_tests();
   subscriber_tests();
   publisher_tests();
   edge_tests();
+  lifetime_tests();
 }

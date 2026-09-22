@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-namespace moq::detail {
+namespace moq {
 // StreamContext manages a single QUIC stream. Receive events are handed to the
 // installed StreamSink without copying: the sink parses the QUIC buffers in place.
 StreamContext::StreamContext(MsQuicTransportAdapter &adapter, HQUIC handle, bool unidirectional)
@@ -115,4 +115,4 @@ QUIC_STATUS StreamContext::handle_event(HQUIC stream, QUIC_STREAM_EVENT *event) 
   return QUIC_STATUS_SUCCESS;
 }
 
-} // namespace moq::detail
+} // namespace moq

@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <memory>
 
-namespace moq::detail {
+namespace moq {
 
 // including msquic_transport_adapter.h will cause circular dependency, so forward declare here
 class MsQuicTransportAdapter;
@@ -33,7 +33,7 @@ public:
   virtual void on_stream_closed() {}
 };
 
-class StreamContext : public std::enable_shared_from_this<StreamContext> {
+class StreamContext {
 public:
   StreamContext(const StreamContext &) = delete;
   StreamContext &operator=(const StreamContext &) = delete;
@@ -65,4 +65,4 @@ private:
   std::shared_ptr<StreamSink> sink_;
 };
 
-} // namespace moq::detail
+} // namespace moq

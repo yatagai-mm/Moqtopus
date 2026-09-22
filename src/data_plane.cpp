@@ -9,7 +9,7 @@
 #include <spdlog/spdlog.h>
 #include <utility>
 
-namespace moq::detail {
+namespace moq {
 
 constexpr uint64_t kNormalStatus = 0x0;
 constexpr uint64_t kEndOfGroupStatus = 0x3;
@@ -407,4 +407,4 @@ void DataPlane::deliver(ReceiveRoute &route, const Object &object) {
   route.handler->on_object(object);
 }
 
-} // namespace moq::detail
+} // namespace moq

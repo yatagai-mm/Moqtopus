@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace moq::detail {
+namespace moq {
 
 // Send-side data plane. Owns the registered tracks, the per-subscription send
 // state (Forward State and filter), the open subgroup streams, and
@@ -84,4 +84,4 @@ private:
   std::unordered_map<RequestId, SubscriptionSend> subscriptions_;
 };
 
-} // namespace moq::detail
+} // namespace moq

@@ -4,7 +4,7 @@
 #include <spdlog/spdlog.h>
 #include <utility>
 
-namespace moq::detail {
+namespace moq {
 
 static bool location_less(const Location &left, const Location &right) {
   return left.group < right.group || (left.group == right.group && left.object < right.object);
@@ -296,4 +296,4 @@ void SendDataPlane::send_datagram_object(const SubscriptionSend &subscription, c
   }
 }
 
-} // namespace moq::detail
+} // namespace moq

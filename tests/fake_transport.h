@@ -11,8 +11,8 @@ struct Stream {
   void receive(const moq::ByteBuffer &bytes, bool fin = false);
 };
 struct Connection {
-  moq::detail::MsQuicTransportAdapter *adapter;
-  moq::detail::MsQuicTransportAdapter::Callbacks callbacks;
+  moq::MsQuicTransportAdapter *adapter;
+  moq::MsQuicTransportAdapter::Callbacks callbacks;
   std::vector<std::unique_ptr<Stream>> streams;
   std::vector<moq::ByteBuffer> datagrams;
   moq::SessionCloseErrorCode close_code = moq::SessionCloseErrorCode::NoError;

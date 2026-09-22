@@ -6,7 +6,7 @@
 
 #include <msquichelper.h>
 
-namespace moq::detail {
+namespace moq {
 
 std::string quic_status_string(QUIC_STATUS status) {
   switch (status) {
@@ -224,4 +224,4 @@ void MsQuicTransportAdapter::remove_stream(StreamContext *stream) {
   streams_.erase(stream);
 }
 
-} // namespace moq::detail
+} // namespace moq

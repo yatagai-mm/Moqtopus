@@ -1,14 +1,15 @@
 #pragma once
 
-#include "moq/client_config.h"
-#include "moq/errors.h"
+#include "moq/session.h"
 #include "moq/types.h"
 
 #include <future>
 #include <memory>
 #include <optional>
 #include <string>
-#include <utility>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace moq {
 
@@ -37,36 +38,52 @@ struct PublishedObject {
   bool end_of_group = false;    // also announce that the group is complete
 };
 
-namespace detail {
-class Publisher;
-}
+class SendDataPlane;
 
 // Client-side MOQT publisher: connects to a relay, accepts peer SUBSCRIBEs for
 // registered tracks and fans published objects out to established
 // subscriptions. All calls are thread-safe; publish() runs synchronously.
-class Publisher {
+class Publisher final : private Session {
 public:
-  ~Publisher();
-
-  Publisher(const Publisher &) = delete;
-  Publisher &operator=(const Publisher &) = delete;
+  ~Publisher() override;
 
   static std::unique_ptr<Publisher> connect(MsQuicClientConfig msquic_config, PublisherConfig publisher_config = {});
 
-  std::future<void> ready();
-  SessionStateSnapshot state() const;
+  using Session::close;
+  using Session::ready;
+  using Session::state;
 
   void register_track(PublishedTrack track);
   void unregister_track(const TrackNamespace &track_namespace, const TrackName &track_name);
   void publish(PublishedObject object);
   void end_track(const TrackNamespace &track_namespace, const TrackName &track_name,
                  PublishDoneCode code = PublishDoneCode::TrackEnded, std::string reason = {});
-  void close(SessionCloseErrorCode error = SessionCloseErrorCode::NoError);
 
 private:
-  explicit Publisher(std::shared_ptr<detail::Publisher> impl) : impl_(std::move(impl)) {}
+  class PublisherSubscriptionFSM;
+  Publisher(MsQuicClientConfig msquic_config, PublisherConfig publisher_config);
+  void handle_data_stream(uint64_t type, const std::shared_ptr<StreamContext> &stream, ByteBuffer prefix,
+                          bool fin) override;
+  void handle_peer_request(const codec::ControlMessage &message, const std::shared_ptr<StreamContext> &stream,
+                           ByteBuffer leftover, bool fin) override;
+  bool consume_peer_request_id(RequestId request_id, std::string &error);
+  void on_ready() override;
+  void announce_namespace(const TrackNamespace &track_namespace);
+  void withdraw_namespace(const TrackNamespace &track_namespace);
+  void accept_subscribe(const ByteBuffer &payload, const std::shared_ptr<StreamContext> &stream, ByteBuffer leftover,
+                        bool fin);
+  void complete_subscription(RequestId request_id, PublishDoneCode code, std::string reason);
+  std::shared_ptr<StreamContext> open_data_stream();
+  void terminate_subscriptions(const std::string &reason) override;
+  size_t active_subscriptions() const override;
 
-  std::shared_ptr<detail::Publisher> impl_;
+  PublisherConfig publisher_config_;
+  std::unique_ptr<SendDataPlane> send_plane_;
+  TrackAlias next_track_alias_ = 0;
+  std::unordered_set<RequestId> peer_request_ids_;
+  std::unordered_map<RequestId, std::shared_ptr<PublisherSubscriptionFSM>> subscriptions_;
+  std::vector<TrackNamespace> pending_announcements_;
+  std::unordered_map<std::string, std::shared_ptr<StreamContext>> announced_namespaces_;
 };
 
 } // namespace moq

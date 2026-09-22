@@ -13,7 +13,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace moq::detail {
+namespace moq {
 
 std::string quic_status_string(QUIC_STATUS status);
 
@@ -61,4 +61,4 @@ private:
   std::unordered_map<StreamContext *, std::shared_ptr<StreamContext>> streams_;
 };
 
-} // namespace moq::detail
+} // namespace moq

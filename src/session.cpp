@@ -1,6 +1,111 @@
-#include "session.h"
+#include "moq/session.h"
 
-namespace moq::detail {
+#include "moq/codec.h"
+#include "msquic_transport_adapter.h"
+
+#include <algorithm>
+#include <limits>
+#include <spdlog/spdlog.h>
+
+namespace moq {
+
+// Buffers only until a stream is classified, then hands its bytes to the role.
+class Session::PeerStreamGate final : public StreamSink {
+public:
+  PeerStreamGate(Session &session, std::weak_ptr<StreamContext> stream)
+      : session_(session), stream_(std::move(stream)) {}
+
+  void on_receive(const BytesView *chunks, size_t count, bool fin) override {
+    const auto stream = stream_.lock();
+    if (!stream || mode_ == Mode::Done)
+      return;
+    const auto lock = session_.lock_session();
+    for (size_t index = 0; index < count; ++index) {
+      if (mode_ == Mode::Padding) {
+        if (!all_zero(chunks[index]))
+          return session_.protocol_violation("padding stream contains non-zero bytes");
+      } else {
+        bytes_.insert(bytes_.end(), chunks[index].begin(), chunks[index].end());
+      }
+    }
+    if (mode_ == Mode::Padding)
+      return;
+    if (stream->unidirectional()) {
+      const auto type = codec::read_varint(bytes_);
+      if (type.status != codec::DecodeStatus::Done) {
+        if (fin)
+          session_.protocol_violation("peer unidirectional stream ended before type");
+        return;
+      }
+      if (type.value == codec::kPaddingStreamType) {
+        mode_ = Mode::Padding;
+        if (!all_zero({bytes_.data() + type.bytes, bytes_.size() - type.bytes})) {
+          return session_.protocol_violation("padding stream contains non-zero bytes");
+        }
+        bytes_.clear();
+        return;
+      }
+      if (type.value != codec::kSetupStreamType) {
+        mode_ = Mode::Done;
+        if (type.value == codec::kFetchStreamType || codec::is_subgroup_stream_type(type.value)) {
+          return session_.handle_data_stream(type.value, stream, std::move(bytes_), fin);
+        }
+        return session_.protocol_violation("unknown peer unidirectional stream type " + std::to_string(type.value));
+      }
+    }
+    const auto frame = codec::read_control_message(bytes_);
+    if (frame.status != codec::DecodeStatus::Done) {
+      if (fin)
+        session_.protocol_violation("peer stream ended before first message");
+      return;
+    }
+    mode_ = Mode::Done;
+    if (stream->unidirectional()) {
+      std::string error;
+      if (!codec::decode_setup(frame.message.payload, error))
+        return session_.protocol_violation(std::move(error));
+      bytes_.clear();
+      session_.handle_peer_setup();
+    } else {
+      bytes_.erase(bytes_.begin(), bytes_.begin() + frame.bytes);
+      session_.handle_peer_request(frame.message, stream, std::move(bytes_), fin);
+    }
+  }
+
+private:
+  static bool all_zero(BytesView bytes) {
+    return std::all_of(bytes.begin(), bytes.end(), [](uint8_t byte) { return byte == 0; });
+  }
+  enum class Mode { Classify, Done, Padding };
+  Session &session_;
+  std::weak_ptr<StreamContext> stream_;
+  Mode mode_ = Mode::Classify;
+  ByteBuffer bytes_;
+};
+
+Session::Session(MsQuicClientConfig config) : config_(std::move(config)) {}
+Session::~Session() = default;
+
+bool Session::known_peer_request_type(uint64_t type) {
+  switch (type) {
+  case codec::kMessageSubscribe:
+  case codec::kMessagePublish:
+  case codec::kMessagePublishNamespace:
+  case codec::kMessageTrackStatus:
+  case codec::kMessageFetch:
+  case codec::kMessageSubscribeNamespace:
+  case codec::kMessageSubscribeTracks:
+    return true;
+  default:
+    return false;
+  }
+}
+
+void Session::on_peer_stream_started(std::shared_ptr<StreamContext> stream) {
+  spdlog::debug("Peer started a {} stream (id={})", stream->unidirectional() ? "unidirectional" : "bidirectional",
+                stream->id());
+  stream->set_sink(std::make_shared<PeerStreamGate>(*this, stream));
+}
 
 // Session management that are common to both publisher and subscriber.
 void Session::start() {
@@ -131,4 +236,4 @@ RequestId Session::allocate_request_id() {
   return id;
 }
 
-} // namespace moq::detail
+} // namespace moq
