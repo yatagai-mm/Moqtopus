@@ -44,7 +44,6 @@ private:
   friend class StreamContext;
 
   static QUIC_STATUS QUIC_API connection_callback(HQUIC connection, void *context, QUIC_CONNECTION_EVENT *event);
-  QUIC_STATUS handle_connection_event(QUIC_CONNECTION_EVENT *event);
   void remove_stream(StreamContext *stream);
 
   MsQuicClientConfig config_;

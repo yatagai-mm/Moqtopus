@@ -159,30 +159,27 @@ void MsQuicTransportAdapter::shutdown(moq::SessionCloseErrorCode error_code) {
 }
 
 QUIC_STATUS QUIC_API MsQuicTransportAdapter::connection_callback(HQUIC, void *context, QUIC_CONNECTION_EVENT *event) {
-  return static_cast<MsQuicTransportAdapter *>(context)->handle_connection_event(event);
-}
-
-QUIC_STATUS MsQuicTransportAdapter::handle_connection_event(QUIC_CONNECTION_EVENT *event) {
+  auto *self = static_cast<MsQuicTransportAdapter *>(context);
   switch (event->Type) {
   case QUIC_CONNECTION_EVENT_CONNECTED:
-    callbacks_.connected();
+    self->callbacks_.connected();
     break;
   case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED: {
     const bool unidirectional = (event->PEER_STREAM_STARTED.Flags & QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL) != 0;
     auto stream =
-        std::shared_ptr<StreamContext>(new StreamContext(*this, event->PEER_STREAM_STARTED.Stream, unidirectional));
-    stream->id_ = GetStreamID(api_, event->PEER_STREAM_STARTED.Stream);
-    api_->SetCallbackHandler(event->PEER_STREAM_STARTED.Stream,
-                             reinterpret_cast<void *>(StreamContext::stream_callback), stream.get());
+        std::shared_ptr<StreamContext>(new StreamContext(*self, event->PEER_STREAM_STARTED.Stream, unidirectional));
+    stream->id_ = GetStreamID(self->api_, event->PEER_STREAM_STARTED.Stream);
+    self->api_->SetCallbackHandler(event->PEER_STREAM_STARTED.Stream,
+                                  reinterpret_cast<void *>(StreamContext::stream_callback), stream.get());
     {
-      std::lock_guard<std::mutex> lock(streams_mutex_);
-      streams_.emplace(stream.get(), stream);
+      std::lock_guard<std::mutex> lock(self->streams_mutex_);
+      self->streams_.emplace(stream.get(), stream);
     }
-    callbacks_.peer_stream_started(stream);
+    self->callbacks_.peer_stream_started(stream);
     break;
   }
   case QUIC_CONNECTION_EVENT_DATAGRAM_RECEIVED:
-    callbacks_.datagram_received(
+    self->callbacks_.datagram_received(
         BytesView{event->DATAGRAM_RECEIVED.Buffer->Buffer, event->DATAGRAM_RECEIVED.Buffer->Length});
     break;
   case QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED:
@@ -195,22 +192,22 @@ QUIC_STATUS MsQuicTransportAdapter::handle_connection_event(QUIC_CONNECTION_EVEN
     const uint64_t error_code = event->SHUTDOWN_INITIATED_BY_TRANSPORT.ErrorCode;
     const std::string message = "Connection shutdown initiated by transport: status=" + quic_status_string(status) +
                                 " (" + std::to_string(status) + "), error_code=" + std::to_string(error_code);
-    callbacks_.transport_error(message);
+    self->callbacks_.transport_error(message);
     break;
   }
   case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER:
-    callbacks_.transport_error("peer shutdown: error_code=" +
-                               std::to_string(event->SHUTDOWN_INITIATED_BY_PEER.ErrorCode));
+    self->callbacks_.transport_error("peer shutdown: error_code=" +
+                                     std::to_string(event->SHUTDOWN_INITIATED_BY_PEER.ErrorCode));
     break;
   case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE: {
     const bool handshake_completed = event->SHUTDOWN_COMPLETE.HandshakeCompleted != FALSE;
     spdlog::debug("MsQuic connection shutdown complete: handshake_completed={}", handshake_completed);
-    callbacks_.shutdown_complete(handshake_completed);
+    self->callbacks_.shutdown_complete(handshake_completed);
     {
-      std::lock_guard<std::mutex> lock(shutdown_mutex_);
-      shutdown_complete_ = true;
+      std::lock_guard<std::mutex> lock(self->shutdown_mutex_);
+      self->shutdown_complete_ = true;
     }
-    shutdown_cv_.notify_all();
+    self->shutdown_cv_.notify_all();
     break;
   }
   default:
