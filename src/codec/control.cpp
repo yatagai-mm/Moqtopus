@@ -1,6 +1,6 @@
 #include "codec_internal.h"
 
-namespace moq::codec {
+namespace moq {
 
 ByteBuffer encode_setup(std::string authority, std::string path) {
   ByteBuffer payload;
@@ -191,4 +191,4 @@ ByteBuffer encode_publish_namespace(RequestId request_id, const TrackNamespace &
   return encode_control_message(kMessagePublishNamespace, payload);
 }
 
-} // namespace moq::codec
+} // namespace moq

@@ -19,8 +19,7 @@ static bool is_valid_object_status(uint64_t status) {
   return status == kNormalStatus || status == kEndOfGroupStatus || status == kEndOfTrackStatus;
 }
 
-using Parse = codec::DecodeStatus;
-using Cursor = codec::Cursor;
+using Parse = DecodeStatus;
 
 // object properties: varint length + opaque bytes
 static Parse read_properties(Cursor &cursor, bool require_non_empty, BytesView &properties) {
@@ -111,7 +110,7 @@ private:
     if (!cursor.read_varint(type)) {
       return Parse::NeedMoreData;
     }
-    if (!codec::is_subgroup_stream_type(type)) {
+    if (!is_subgroup_stream_type(type)) {
       return fail("invalid SUBGROUP_HEADER stream type");
     }
     if (!cursor.read_varint(alias) || !cursor.read_varint(group_id_)) {
@@ -296,7 +295,7 @@ void DataPlane::deliver_datagram(BytesView bytes, bool allow_buffer) {
   if (!cursor.read_varint(type)) {
     return protocol_error("datagram has malformed type");
   }
-  if (type == codec::kPaddingDatagramType) {
+  if (type == kPaddingDatagramType) {
     if (!std::all_of(cursor.bytes.data + cursor.offset, cursor.bytes.data + cursor.bytes.size,
                      [](uint8_t byte) { return byte == 0; })) {
       protocol_error("padding datagram contains non-zero bytes");

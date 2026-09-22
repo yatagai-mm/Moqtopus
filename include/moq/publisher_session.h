@@ -64,7 +64,7 @@ private:
   Publisher(MsQuicClientConfig msquic_config, PublisherConfig publisher_config);
   void handle_data_stream(uint64_t type, const std::shared_ptr<StreamContext> &stream, ByteBuffer prefix,
                           bool fin) override;
-  void handle_peer_request(const codec::ControlMessage &message, const std::shared_ptr<StreamContext> &stream,
+  void handle_peer_request(const ControlMessage &message, const std::shared_ptr<StreamContext> &stream,
                            ByteBuffer leftover, bool fin) override;
   bool consume_peer_request_id(RequestId request_id, std::string &error);
   void on_ready() override;

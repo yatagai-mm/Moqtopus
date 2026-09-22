@@ -30,8 +30,8 @@ public:
       response_buffer_.insert(response_buffer_.end(), chunks[index].begin(), chunks[index].end());
     }
     while (phase_ != SubscriptionPhase::Terminated) {
-      const codec::ControlMessageResult parsed = codec::read_control_message(response_buffer_);
-      if (parsed.status != codec::DecodeStatus::Done) {
+      const ControlMessageResult parsed = read_control_message(response_buffer_);
+      if (parsed.status != DecodeStatus::Done) {
         if (fin && !response_buffer_.empty()) {
           terminate("request stream ended mid-message");
         }
@@ -52,7 +52,7 @@ public:
 
   // Enqueue a request-update to be sent on this stream.
   void send_request_update(RequestId allocated_request_id, RequestUpdate update, std::promise<RequestOk> &promise) {
-    if (!stream_->send(codec::encode_request_update(allocated_request_id, update))) {
+    if (!stream_->send(encode_request_update(allocated_request_id, update))) {
       throw std::runtime_error("StreamSend failed for REQUEST_UPDATE");
     }
     updates_.push_back(std::move(promise));
@@ -90,17 +90,17 @@ private:
       updates_.pop_front();
     }
   }
-  void handle_control_message(const codec::ControlMessage &message) {
+  void handle_control_message(const ControlMessage &message) {
     const bool pending = phase_ == SubscriptionPhase::Pending;
-    if (pending && message.type != codec::kMessageSubscribeOk && message.type != codec::kMessageRequestError) {
+    if (pending && message.type != kMessageSubscribeOk && message.type != kMessageRequestError) {
       return terminate("invalid first response on SUBSCRIBE stream");
     }
     std::string error;
     switch (message.type) {
-    case codec::kMessageSubscribeOk: {
+    case kMessageSubscribeOk: {
       if (!pending)
         return terminate("duplicate SUBSCRIBE_OK");
-      const auto ok = codec::decode_subscribe_ok(message.payload, error);
+      const auto ok = decode_subscribe_ok(message.payload, error);
       if (!ok)
         return terminate(error);
       auto route = std::make_shared<ReceiveRoute>();
@@ -120,8 +120,8 @@ private:
       result_.reset();
       return;
     }
-    case codec::kMessageRequestError: {
-      const auto rejected = codec::decode_request_error(message.payload, error);
+    case kMessageRequestError: {
+      const auto rejected = decode_request_error(message.payload, error);
       if (!rejected)
         return terminate(error);
       if (pending) {
@@ -135,10 +135,10 @@ private:
       phase_ = SubscriptionPhase::UpdateFailed;
       return;
     }
-    case codec::kMessageRequestOk: {
+    case kMessageRequestOk: {
       if (updates_.empty())
         return terminate("REQUEST_OK arrived without an in-flight REQUEST_UPDATE");
-      const auto ok = codec::decode_request_ok(message.payload, error);
+      const auto ok = decode_request_ok(message.payload, error);
       if (!ok)
         return terminate(error);
       if (!ok->track_properties.empty())
@@ -147,14 +147,14 @@ private:
       updates_.pop_front();
       return;
     }
-    case codec::kMessagePublishDone: {
-      const auto done = codec::decode_publish_done(message.payload, error);
+    case kMessagePublishDone: {
+      const auto done = decode_publish_done(message.payload, error);
       if (!done)
         return terminate(error);
       handler_->on_publish_done(*done);
       return terminate();
     }
-    case codec::kMessageGoAway:
+    case kMessageGoAway:
       return;
     default:
       handler_->on_error(ReceiveError{0, "invalid response on SUBSCRIBE stream: " + std::to_string(message.type)});
@@ -206,7 +206,7 @@ void Subscriber::stop_subscription(RequestId request_id) {
 
 void Subscriber::handle_data_stream(uint64_t type, const std::shared_ptr<StreamContext> &stream, ByteBuffer prefix,
                                     bool fin) {
-  if (type == codec::kFetchStreamType)
+  if (type == kFetchStreamType)
     return stream->abort_receive(0);
   data_plane_->start_subgroup_stream(stream, std::move(prefix), fin);
 }
@@ -231,7 +231,7 @@ std::future<Subscription> Subscriber::subscribe(SubscribeRequest request, std::s
     stream->set_sink(fsm);
     subscriptions_.emplace(request_id, fsm);
 
-    if (!stream->send(codec::encode_subscribe(request_id, request))) {
+    if (!stream->send(encode_subscribe(request_id, request))) {
       stop_subscription_now(request_id, "StreamSend failed for SUBSCRIBE");
       throw std::runtime_error("StreamSend failed for SUBSCRIBE");
     }
@@ -260,16 +260,16 @@ std::future<RequestOk> Subscriber::request_update(RequestId existing_request_id,
   return future;
 }
 
-void Subscriber::handle_peer_request(const codec::ControlMessage &message, const std::shared_ptr<StreamContext> &stream,
+void Subscriber::handle_peer_request(const ControlMessage &message, const std::shared_ptr<StreamContext> &stream,
                                      ByteBuffer, bool) {
   const auto request_type = message.type;
   if (!known_peer_request_type(request_type)) {
     protocol_violation("unknown peer request type " + std::to_string(request_type));
     return;
   }
-  const bool publish = request_type == codec::kMessagePublish;
+  const bool publish = request_type == kMessagePublish;
   stream->send(
-      codec::encode_request_error(publish ? RequestErrorCode::Uninterested : RequestErrorCode::NotSupported,
+      encode_request_error(publish ? RequestErrorCode::Uninterested : RequestErrorCode::NotSupported,
                                   publish ? "subscriber is not accepting PUBLISH" : "subscriber-only implementation"),
       true);
   stream->abort_receive(0);

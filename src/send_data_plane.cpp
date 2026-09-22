@@ -14,11 +14,11 @@ static bool valid_publish_status(const PublishedObject &object) {
   if (!object.status) {
     return true;
   }
-  if (*object.status != codec::kObjectStatusNormal && *object.status != codec::kObjectStatusEndOfGroup &&
-      *object.status != codec::kObjectStatusEndOfTrack) {
+  if (*object.status != kObjectStatusNormal && *object.status != kObjectStatusEndOfGroup &&
+      *object.status != kObjectStatusEndOfTrack) {
     return false;
   }
-  return *object.status == codec::kObjectStatusNormal || object.payload.empty();
+  return *object.status == kObjectStatusNormal || object.payload.empty();
 }
 
 static bool nonzero(const std::optional<uint64_t> &value) { return value && *value != 0; }
@@ -50,25 +50,25 @@ bool SendDataPlane::has_track_in_namespace(const TrackNamespace &track_namespace
   return false;
 }
 
-void SendDataPlane::resolve_filter(const codec::SubscriptionFilter &filter, const std::optional<Location> &largest,
+void SendDataPlane::resolve_filter(const SubscriptionFilter &filter, const std::optional<Location> &largest,
                                    Location &start, std::optional<GroupId> &end_group) const {
   start = Location{0, 0};
   end_group.reset();
   switch (filter.filter_type) {
-  case codec::kFilterLargestObject:
+  case kFilterLargestObject:
     if (largest) {
       start = Location{largest->group, largest->object + 1};
     }
     break;
-  case codec::kFilterNextGroupStart:
+  case kFilterNextGroupStart:
     if (largest) {
       start = Location{largest->group + 1, 0};
     }
     break;
-  case codec::kFilterAbsoluteStart:
+  case kFilterAbsoluteStart:
     start = filter.start;
     break;
-  case codec::kFilterAbsoluteRange:
+  case kFilterAbsoluteRange:
     start = filter.start;
     end_group = filter.start.group + filter.end_group_delta; // overflow rejected during decode
     break;
@@ -88,7 +88,7 @@ bool SendDataPlane::passes_filter(const SubscriptionSend &subscription, GroupId 
 std::optional<RequestError> SendDataPlane::attach_subscription(RequestId request_id, TrackAlias track_alias,
                                                                const TrackNamespace &track_namespace,
                                                                const TrackName &track_name,
-                                                               const codec::SubscriptionOptions &options) {
+                                                               const SubscriptionOptions &options) {
   if (nonzero(options.subgroup_delivery_timeout) || nonzero(options.object_delivery_timeout)) {
     return RequestError{RequestErrorCode::NotSupported, 0, "delivery timeouts are not supported"};
   }
@@ -114,7 +114,7 @@ std::optional<RequestError> SendDataPlane::attach_subscription(RequestId request
 }
 
 std::optional<RequestError> SendDataPlane::update_subscription(RequestId request_id,
-                                                               const codec::SubscriptionOptions &options) {
+                                                               const SubscriptionOptions &options) {
   const auto found = subscriptions_.find(request_id);
   if (found == subscriptions_.end()) {
     return RequestError{RequestErrorCode::DoesNotExist, 0, "subscription is not established"};
@@ -209,11 +209,11 @@ void SendDataPlane::publish(const PublishedObject &object) {
           send_on_subgroup_stream(subscription, object);
         }
       }
-      if (object.status && *object.status == codec::kObjectStatusEndOfTrack) {
+      if (object.status && *object.status == kObjectStatusEndOfTrack) {
         complete = PublishDoneCode::TrackEnded;
         complete_reason = "end of track";
       } else if (subscription.end_group && object.group_id == *subscription.end_group &&
-                 (object.end_of_group || (object.status && *object.status == codec::kObjectStatusEndOfGroup))) {
+                 (object.end_of_group || (object.status && *object.status == kObjectStatusEndOfGroup))) {
         complete = PublishDoneCode::SubscriptionEnded;
         complete_reason = "end of subscription range";
       }
@@ -247,26 +247,26 @@ void SendDataPlane::send_on_subgroup_stream(SubscriptionSend &subscription, cons
     }
     ++subscription.stream_count;
     open_it = subscription.streams.emplace(key, OpenSubgroupStream{std::move(stream), std::nullopt}).first;
-    codec::encode_subgroup_header(bytes, subscription.track_alias, object.group_id, subgroup_id,
+    encode_subgroup_header(bytes, subscription.track_alias, object.group_id, subgroup_id,
                                   object.publisher_priority);
   }
   OpenSubgroupStream &open = open_it->second;
 
   const uint64_t delta = open.last_object_id ? object.object_id - *open.last_object_id - 1 : object.object_id;
   BytesView properties{object.properties};
-  if (object.status && *object.status != codec::kObjectStatusNormal && !properties.empty()) {
+  if (object.status && *object.status != kObjectStatusNormal && !properties.empty()) {
     spdlog::warn("dropping properties of non-normal status object {}/{}", object.group_id, object.object_id);
     properties = BytesView{};
   }
-  codec::encode_subgroup_object(bytes, delta, properties, object.status, BytesView{object.payload});
+  encode_subgroup_object(bytes, delta, properties, object.status, BytesView{object.payload});
   open.last_object_id = object.object_id;
 
   bool close_stream =
-      object.end_of_subgroup || object.end_of_group || (object.status && *object.status != codec::kObjectStatusNormal);
-  if (object.end_of_group && (!object.status || *object.status == codec::kObjectStatusNormal)) {
+      object.end_of_subgroup || object.end_of_group || (object.status && *object.status != kObjectStatusNormal);
+  if (object.end_of_group && (!object.status || *object.status == kObjectStatusNormal)) {
     // Explicit EndOfGroup marker (at Object ID + 1) so the subscriber learns
     // the final Object ID; the plain FIN would only close the subgroup.
-    codec::encode_subgroup_object(bytes, 0, BytesView{}, codec::kObjectStatusEndOfGroup, BytesView{});
+    encode_subgroup_object(bytes, 0, BytesView{}, kObjectStatusEndOfGroup, BytesView{});
     close_stream = true;
   }
 
@@ -281,13 +281,13 @@ void SendDataPlane::send_on_subgroup_stream(SubscriptionSend &subscription, cons
 void SendDataPlane::send_datagram_object(const SubscriptionSend &subscription, const PublishedObject &object) {
   std::optional<ObjectStatusCode> status = object.status;
   if (!status && object.payload.empty()) {
-    status = codec::kObjectStatusNormal; // zero-length objects encode Normal explicitly
+    status = kObjectStatusNormal; // zero-length objects encode Normal explicitly
   }
   BytesView properties{object.properties};
-  if (status && *status != codec::kObjectStatusNormal && !properties.empty()) {
+  if (status && *status != kObjectStatusNormal && !properties.empty()) {
     properties = BytesView{};
   }
-  ByteBuffer bytes = codec::encode_object_datagram(subscription.track_alias, object.group_id, object.object_id,
+  ByteBuffer bytes = encode_object_datagram(subscription.track_alias, object.group_id, object.object_id,
                                                    object.publisher_priority, properties, status,
                                                    BytesView{object.payload}, object.end_of_group);
   if (!callbacks_.send_datagram(std::move(bytes))) {

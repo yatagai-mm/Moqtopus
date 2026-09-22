@@ -12,27 +12,27 @@ Parameter Parameter::uint8(uint64_t type, uint8_t value) { return Parameter{type
 
 Parameter Parameter::varint(uint64_t type, uint64_t value) {
   Parameter parameter{type, {}};
-  codec::write_varint(parameter.encoded_value, value);
+  write_varint(parameter.encoded_value, value);
   return parameter;
 }
 
 Parameter Parameter::location(uint64_t type, Location value) {
   Parameter parameter{type, {}};
-  codec::write_varint(parameter.encoded_value, value.group);
-  codec::write_varint(parameter.encoded_value, value.object);
+  write_varint(parameter.encoded_value, value.group);
+  write_varint(parameter.encoded_value, value.object);
   return parameter;
 }
 
 Parameter Parameter::length_prefixed(uint64_t type, ByteBuffer value) {
   Parameter parameter{type, {}};
-  codec::write_varint(parameter.encoded_value, value.size());
+  write_varint(parameter.encoded_value, value.size());
   parameter.encoded_value.insert(parameter.encoded_value.end(), value.begin(), value.end());
   return parameter;
 }
 
 Parameter Parameter::track_namespace(uint64_t type, TrackNamespace value) {
   Parameter parameter{type, {}};
-  codec::write_track_namespace(parameter.encoded_value, value);
+  write_track_namespace(parameter.encoded_value, value);
   return parameter;
 }
 
@@ -41,9 +41,6 @@ RequestRejected::RequestRejected(RequestErrorCode code, uint64_t retry_interval,
                          (reason.empty() ? "" : " reason=" + reason)),
       code_(code), retry_interval_(retry_interval), reason_(std::move(reason)) {}
 
-} // namespace moq
-
-namespace moq::codec {
 void write_varint(ByteBuffer &out, uint64_t value) {
   size_t length = 1;
   for (uint64_t max = 0x7f; length < 9 && value > max; max = (max << 7) | 0x7f)
@@ -188,4 +185,4 @@ void encode_subgroup_object(ByteBuffer &out, uint64_t object_id_delta, BytesView
   }
 }
 
-} // namespace moq::codec
+} // namespace moq

@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-namespace moq::codec {
+namespace moq {
 
 struct Cursor {
   BytesView bytes;
@@ -19,7 +19,7 @@ struct Cursor {
   size_t remaining() const { return bytes.size - offset; }
   bool read_byte(uint8_t &value) { return offset < bytes.size && (value = bytes.data[offset++], true); }
   bool read_varint(uint64_t &value) {
-    const auto parsed = codec::read_varint(bytes.data, bytes.size, offset);
+    const auto parsed = moq::read_varint(bytes.data, bytes.size, offset);
     if (parsed.status != DecodeStatus::Done)
       return false;
     offset += parsed.bytes;
@@ -183,4 +183,4 @@ inline void encode_parameters(ByteBuffer &payload, std::vector<Parameter> parame
   }
 }
 
-} // namespace moq::codec
+} // namespace moq

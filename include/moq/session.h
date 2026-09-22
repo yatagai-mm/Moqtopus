@@ -16,9 +16,7 @@ namespace moq {
 
 class MsQuicTransportAdapter;
 class StreamContext;
-namespace codec {
 struct ControlMessage;
-}
 
 // Connection lifetime shared by Subscriber and Publisher.
 class Session {
@@ -51,7 +49,7 @@ protected:
 
   virtual void handle_data_stream(uint64_t type, const std::shared_ptr<StreamContext> &stream, ByteBuffer prefix,
                                   bool fin) = 0;
-  virtual void handle_peer_request(const codec::ControlMessage &message, const std::shared_ptr<StreamContext> &stream,
+  virtual void handle_peer_request(const ControlMessage &message, const std::shared_ptr<StreamContext> &stream,
                                    ByteBuffer leftover, bool fin) = 0;
   virtual void on_datagram(BytesView) {}
   virtual void on_ready() {}

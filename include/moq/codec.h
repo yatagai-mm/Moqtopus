@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace moq::codec {
+namespace moq {
 
 constexpr uint64_t kSetupStreamType = 0x2f00;
 constexpr uint64_t kFetchStreamType = 0x05;
@@ -158,4 +158,4 @@ void encode_subgroup_object(ByteBuffer &out, uint64_t object_id_delta, BytesView
 void write_track_namespace(ByteBuffer &out, const TrackNamespace &name_space);
 bool is_subgroup_stream_type(uint64_t type);
 
-} // namespace moq::codec
+} // namespace moq

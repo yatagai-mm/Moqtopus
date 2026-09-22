@@ -7,7 +7,6 @@
 #include <limits>
 #include <random>
 using namespace moq;
-using namespace moq::codec;
 using namespace std::chrono_literals;
 
 struct Handler : ObjectHandler {

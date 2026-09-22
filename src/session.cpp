@@ -31,13 +31,13 @@ public:
     if (mode_ == Mode::Padding)
       return;
     if (stream->unidirectional()) {
-      const auto type = codec::read_varint(bytes_);
-      if (type.status != codec::DecodeStatus::Done) {
+      const auto type = read_varint(bytes_);
+      if (type.status != DecodeStatus::Done) {
         if (fin)
           session_.protocol_violation("peer unidirectional stream ended before type");
         return;
       }
-      if (type.value == codec::kPaddingStreamType) {
+      if (type.value == kPaddingStreamType) {
         mode_ = Mode::Padding;
         if (!all_zero({bytes_.data() + type.bytes, bytes_.size() - type.bytes})) {
           return session_.protocol_violation("padding stream contains non-zero bytes");
@@ -45,16 +45,16 @@ public:
         bytes_.clear();
         return;
       }
-      if (type.value != codec::kSetupStreamType) {
+      if (type.value != kSetupStreamType) {
         mode_ = Mode::Done;
-        if (type.value == codec::kFetchStreamType || codec::is_subgroup_stream_type(type.value)) {
+        if (type.value == kFetchStreamType || is_subgroup_stream_type(type.value)) {
           return session_.handle_data_stream(type.value, stream, std::move(bytes_), fin);
         }
         return session_.protocol_violation("unknown peer unidirectional stream type " + std::to_string(type.value));
       }
     }
-    const auto frame = codec::read_control_message(bytes_);
-    if (frame.status != codec::DecodeStatus::Done) {
+    const auto frame = read_control_message(bytes_);
+    if (frame.status != DecodeStatus::Done) {
       if (fin)
         session_.protocol_violation("peer stream ended before first message");
       return;
@@ -62,7 +62,7 @@ public:
     mode_ = Mode::Done;
     if (stream->unidirectional()) {
       std::string error;
-      if (!codec::decode_setup(frame.message.payload, error))
+      if (!decode_setup(frame.message.payload, error))
         return session_.protocol_violation(std::move(error));
       bytes_.clear();
       session_.handle_peer_setup();
@@ -88,13 +88,13 @@ Session::~Session() = default;
 
 bool Session::known_peer_request_type(uint64_t type) {
   switch (type) {
-  case codec::kMessageSubscribe:
-  case codec::kMessagePublish:
-  case codec::kMessagePublishNamespace:
-  case codec::kMessageTrackStatus:
-  case codec::kMessageFetch:
-  case codec::kMessageSubscribeNamespace:
-  case codec::kMessageSubscribeTracks:
+  case kMessageSubscribe:
+  case kMessagePublish:
+  case kMessagePublishNamespace:
+  case kMessageTrackStatus:
+  case kMessageFetch:
+  case kMessageSubscribeNamespace:
+  case kMessageSubscribeTracks:
     return true;
   default:
     return false;
@@ -119,7 +119,7 @@ void Session::start() {
       const auto authority =
           config_.authority.empty() ? config_.host + ":" + std::to_string(config_.port) : config_.authority;
       auto stream = transport_->open_stream(true);
-      if (!stream->send(codec::encode_setup(authority, config_.path))) {
+      if (!stream->send(encode_setup(authority, config_.path))) {
         throw std::runtime_error("StreamSend failed for SETUP");
       }
       state_.local_setup_sent = true;

@@ -47,8 +47,8 @@ public:
   // ---- subscription lifecycle ----
   std::optional<RequestError> attach_subscription(RequestId request_id, TrackAlias track_alias,
                                                   const TrackNamespace &track_namespace, const TrackName &track_name,
-                                                  const codec::SubscriptionOptions &options);
-  std::optional<RequestError> update_subscription(RequestId request_id, const codec::SubscriptionOptions &options);
+                                                  const SubscriptionOptions &options);
+  std::optional<RequestError> update_subscription(RequestId request_id, const SubscriptionOptions &options);
   // FIN on local completion, RESET on cancellation; returns opened stream count.
   uint64_t detach_subscription(RequestId request_id, std::optional<uint64_t> reset_error = {});
 
@@ -73,7 +73,7 @@ private:
     std::map<std::pair<GroupId, SubgroupId>, OpenSubgroupStream> streams;
   };
 
-  void resolve_filter(const codec::SubscriptionFilter &filter, const std::optional<Location> &largest, Location &start,
+  void resolve_filter(const SubscriptionFilter &filter, const std::optional<Location> &largest, Location &start,
                       std::optional<GroupId> &end_group) const;
   bool passes_filter(const SubscriptionSend &subscription, GroupId group_id, ObjectId object_id) const;
   void send_on_subgroup_stream(SubscriptionSend &subscription, const PublishedObject &object);

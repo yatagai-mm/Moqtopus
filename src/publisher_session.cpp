@@ -50,16 +50,16 @@ public:
       buffer_.insert(buffer_.end(), chunks[index].begin(), chunks[index].end());
     }
     while (true) {
-      const codec::ControlMessageResult parsed = codec::read_control_message(buffer_);
-      if (parsed.status != codec::DecodeStatus::Done) {
+      const ControlMessageResult parsed = read_control_message(buffer_);
+      if (parsed.status != DecodeStatus::Done) {
         return;
       }
       buffer_.erase(buffer_.begin(), buffer_.begin() + static_cast<std::ptrdiff_t>(parsed.bytes));
-      if (parsed.message.type == codec::kMessageRequestOk) {
+      if (parsed.message.type == kMessageRequestOk) {
         spdlog::info("namespace \"{}\" announced", name_);
-      } else if (parsed.message.type == codec::kMessageRequestError) {
+      } else if (parsed.message.type == kMessageRequestError) {
         std::string error;
-        const std::optional<RequestError> rejected = codec::decode_request_error(parsed.message.payload, error);
+        const std::optional<RequestError> rejected = decode_request_error(parsed.message.payload, error);
         spdlog::warn("relay refused PUBLISH_NAMESPACE for \"{}\": {}", name_, rejected ? rejected->reason : error);
       } else {
         spdlog::debug("ignoring message {} on PUBLISH_NAMESPACE stream", parsed.message.type);
@@ -118,7 +118,7 @@ public:
     }
     // PUBLISH_DONE must follow the closure of every data stream (Section 10.11).
     const uint64_t stream_count = owner_.send_plane_->detach_subscription(request_id_);
-    if (!stream_->send(codec::encode_publish_done(static_cast<uint64_t>(code), stream_count, reason), true)) {
+    if (!stream_->send(encode_publish_done(static_cast<uint64_t>(code), stream_count, reason), true)) {
       spdlog::warn("StreamSend failed for PUBLISH_DONE on request {}", request_id_);
     }
     stream_->abort_receive(static_cast<uint64_t>(StreamResetCode::Cancelled));
@@ -140,15 +140,15 @@ public:
 private:
   void process_buffer(bool fin) {
     while (!terminated_) {
-      const codec::ControlMessageResult parsed = codec::read_control_message(buffer_);
-      if (parsed.status != codec::DecodeStatus::Done) {
+      const ControlMessageResult parsed = read_control_message(buffer_);
+      if (parsed.status != DecodeStatus::Done) {
         if (fin && !buffer_.empty()) {
           owner_.protocol_violation("request stream ended mid-message");
         }
         return;
       }
       buffer_.erase(buffer_.begin(), buffer_.begin() + static_cast<std::ptrdiff_t>(parsed.bytes));
-      if (parsed.message.type == codec::kMessageRequestUpdate) {
+      if (parsed.message.type == kMessageRequestUpdate) {
         handle_request_update(parsed.message);
       } else {
         owner_.protocol_violation("unexpected message " + std::to_string(parsed.message.type) +
@@ -157,9 +157,9 @@ private:
       }
     }
   }
-  void handle_request_update(const codec::ControlMessage &message) {
+  void handle_request_update(const ControlMessage &message) {
     std::string error;
-    const std::optional<codec::RequestUpdateMessage> update = codec::decode_request_update(message.payload, error);
+    const std::optional<RequestUpdateMessage> update = decode_request_update(message.payload, error);
     if (!update) {
       owner_.protocol_violation(std::move(error));
       return;
@@ -168,8 +168,8 @@ private:
       owner_.begin_close(SessionCloseErrorCode::InvalidRequestId, std::move(error));
       return;
     }
-    codec::SubscriptionOptions options;
-    if (!codec::decode_subscription_options(update->parameters, options, error)) {
+    SubscriptionOptions options;
+    if (!decode_subscription_options(update->parameters, options, error)) {
       owner_.protocol_violation(std::move(error));
       return;
     }
@@ -177,16 +177,16 @@ private:
     const auto rejection = owner_.send_plane_->update_subscription(request_id_, options);
     if (rejection) {
       // A rejected update ends the subscription (draft-18 section 10.9.1).
-      stream_->send(codec::encode_request_error(rejection->code, rejection->reason));
+      stream_->send(encode_request_error(rejection->code, rejection->reason));
       finish(PublishDoneCode::UpdateFailed, rejection->reason);
       return;
     }
 
     std::vector<Parameter> parameters;
     if (const auto *track = owner_.send_plane_->find_track(track_namespace_, track_name_); track && track->largest) {
-      parameters.push_back(Parameter::location(codec::kParameterLargestObject, *track->largest));
+      parameters.push_back(Parameter::location(kParameterLargestObject, *track->largest));
     }
-    if (!stream_->send(codec::encode_request_ok(std::move(parameters)))) {
+    if (!stream_->send(encode_request_ok(std::move(parameters)))) {
       spdlog::warn("StreamSend failed for REQUEST_OK on request {}", request_id_);
     }
   }
@@ -269,7 +269,7 @@ void Publisher::handle_data_stream(uint64_t, const std::shared_ptr<StreamContext
   stream->abort_receive(static_cast<uint64_t>(StreamResetCode::Cancelled));
 }
 
-void Publisher::handle_peer_request(const codec::ControlMessage &first_message,
+void Publisher::handle_peer_request(const ControlMessage &first_message,
                                     const std::shared_ptr<StreamContext> &stream, ByteBuffer leftover, bool fin) {
   const std::lock_guard<std::recursive_mutex> lock(mutex_);
   if (state_.phase == SessionPhase::Closing || state_.phase == SessionPhase::Closed) {
@@ -280,7 +280,7 @@ void Publisher::handle_peer_request(const codec::ControlMessage &first_message,
     return;
   }
   try {
-    if (first_message.type == codec::kMessageSubscribe) {
+    if (first_message.type == kMessageSubscribe) {
       accept_subscribe(first_message.payload, stream, std::move(leftover), fin);
       return;
     }
@@ -289,9 +289,9 @@ void Publisher::handle_peer_request(const codec::ControlMessage &first_message,
                   "unknown peer request type " + std::to_string(first_message.type));
       return;
     }
-    const bool publish = first_message.type == codec::kMessagePublish;
+    const bool publish = first_message.type == kMessagePublish;
     stream->send(
-        codec::encode_request_error(publish ? RequestErrorCode::Uninterested : RequestErrorCode::NotSupported,
+        encode_request_error(publish ? RequestErrorCode::Uninterested : RequestErrorCode::NotSupported,
                                     publish ? "publisher is not accepting PUBLISH" : "publisher-only implementation"),
         true);
     stream->abort_receive(static_cast<uint64_t>(StreamResetCode::Cancelled));
@@ -328,7 +328,7 @@ void Publisher::announce_namespace(const TrackNamespace &track_namespace) {
     auto stream = transport_->open_stream(false);
     stream->set_sink(std::make_shared<NamespaceAnnouncementFSM>(name));
     const RequestId request_id = allocate_request_id();
-    if (!stream->send(codec::encode_publish_namespace(request_id, track_namespace))) {
+    if (!stream->send(encode_publish_namespace(request_id, track_namespace))) {
       throw std::runtime_error("StreamSend failed for PUBLISH_NAMESPACE");
     }
     spdlog::debug("PUBLISH_NAMESPACE sent for \"{}\" request={}", name, request_id);
@@ -357,7 +357,7 @@ void Publisher::withdraw_namespace(const TrackNamespace &track_namespace) {
 void Publisher::accept_subscribe(const ByteBuffer &payload, const std::shared_ptr<StreamContext> &stream,
                                  ByteBuffer leftover, bool fin) {
   std::string error;
-  const std::optional<codec::Subscribe> subscribe = codec::decode_subscribe(payload, error);
+  const std::optional<Subscribe> subscribe = decode_subscribe(payload, error);
   if (!subscribe) {
     begin_close(SessionCloseErrorCode::ProtocolViolation, std::move(error));
     return;
@@ -367,15 +367,15 @@ void Publisher::accept_subscribe(const ByteBuffer &payload, const std::shared_pt
     begin_close(SessionCloseErrorCode::InvalidRequestId, std::move(error));
     return;
   }
-  codec::SubscriptionOptions options;
-  if (!codec::decode_subscription_options(subscribe->parameters, options, error)) {
+  SubscriptionOptions options;
+  if (!decode_subscription_options(subscribe->parameters, options, error)) {
     begin_close(SessionCloseErrorCode::ProtocolViolation, std::move(error));
     return;
   }
 
   const auto reject = [&stream](RequestErrorCode code, const std::string &reason) {
     spdlog::debug("rejecting SUBSCRIBE: code={} reason={}", static_cast<uint64_t>(code), reason);
-    stream->send(codec::encode_request_error(code, reason), true);
+    stream->send(encode_request_error(code, reason), true);
     stream->abort_receive(static_cast<uint64_t>(StreamResetCode::Cancelled));
   };
   if (reserved_namespace(subscribe->track_namespace)) {
@@ -403,9 +403,9 @@ void Publisher::accept_subscribe(const ByteBuffer &payload, const std::shared_pt
 
   std::vector<Parameter> parameters;
   if (const auto largest = track->largest) {
-    parameters.push_back(Parameter::location(codec::kParameterLargestObject, *largest));
+    parameters.push_back(Parameter::location(kParameterLargestObject, *largest));
   }
-  if (!stream->send(codec::encode_subscribe_ok(track_alias, std::move(parameters), track->track.track_properties))) {
+  if (!stream->send(encode_subscribe_ok(track_alias, std::move(parameters), track->track.track_properties))) {
     begin_close(SessionCloseErrorCode::InternalError, "StreamSend failed for SUBSCRIBE_OK");
     return;
   }

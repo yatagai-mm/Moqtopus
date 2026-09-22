@@ -49,7 +49,7 @@ private:
   Subscriber(MsQuicClientConfig msquic_config, SubscriberConfig subscriber_config);
   void handle_data_stream(uint64_t type, const std::shared_ptr<StreamContext> &stream, ByteBuffer prefix,
                           bool fin) override;
-  void handle_peer_request(const codec::ControlMessage &message, const std::shared_ptr<StreamContext> &stream,
+  void handle_peer_request(const ControlMessage &message, const std::shared_ptr<StreamContext> &stream,
                            ByteBuffer leftover, bool fin) override;
   void stop_subscription_now(RequestId request_id, std::string reason, uint64_t stream_error_code = 0);
   void on_datagram(BytesView bytes) override;
