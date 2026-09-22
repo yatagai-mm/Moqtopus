@@ -16,10 +16,11 @@ inline std::exception_ptr rejected_exception(const RequestError &error) {
   return std::make_exception_ptr(RequestRejected(error.code, error.retry_interval, error.reason));
 }
 
-class Subscriber::SubscriptionFSM final : public StreamSink {
+class Subscriber::SubscriptionRequest final : public StreamSink {
 public:
-  SubscriptionFSM(RequestId request_id, std::shared_ptr<ObjectHandler> handler, std::shared_ptr<StreamContext> stream,
-                  Subscriber &owner, std::shared_ptr<std::promise<Subscription>> result)
+  SubscriptionRequest(RequestId request_id, std::shared_ptr<ObjectHandler> handler,
+                      std::shared_ptr<StreamContext> stream, Subscriber &owner,
+                      std::shared_ptr<std::promise<Subscription>> result)
       : request_id_(request_id), stream_(std::move(stream)), handler_(std::move(handler)), owner_(owner),
         result_(std::move(result)) {}
 
@@ -195,8 +196,8 @@ SubscriptionStateSnapshot Subscriber::subscription_state(RequestId request_id) c
   const auto found = subscriptions_.find(request_id);
   if (found == subscriptions_.end())
     return {SubscriptionPhase::Terminated, request_id, {}, 0};
-  const auto &fsm = *found->second;
-  return {fsm.phase(), request_id, fsm.track_alias(), fsm.inflight_updates()};
+  const auto &subscription = *found->second;
+  return {subscription.phase(), request_id, subscription.track_alias(), subscription.inflight_updates()};
 }
 
 void Subscriber::stop_subscription(RequestId request_id) {
@@ -226,10 +227,10 @@ std::future<Subscription> Subscriber::subscribe(SubscribeRequest request, std::s
   try {
     const RequestId request_id = allocate_request_id();
     auto stream = transport_->open_stream(false);
-    auto fsm = std::make_shared<SubscriptionFSM>(request_id, std::move(handler), stream, *this, promise);
+    auto subscription = std::make_shared<SubscriptionRequest>(request_id, std::move(handler), stream, *this, promise);
     // Install request state before sending so an immediate response cannot race sink setup.
-    stream->set_sink(fsm);
-    subscriptions_.emplace(request_id, fsm);
+    stream->set_sink(subscription);
+    subscriptions_.emplace(request_id, subscription);
 
     if (!stream->send(encode_subscribe(request_id, request))) {
       stop_subscription_now(request_id, "StreamSend failed for SUBSCRIBE");
@@ -250,10 +251,10 @@ std::future<RequestOk> Subscriber::request_update(RequestId existing_request_id,
     fail(promise, "REQUEST_UPDATE requires an established subscription");
     return future;
   }
-  auto fsm = found->second;
+  auto subscription = found->second;
   try {
     const RequestId request_id = allocate_request_id();
-    fsm->send_request_update(request_id, std::move(update), promise);
+    subscription->send_request_update(request_id, std::move(update), promise);
   } catch (...) {
     fail(promise, std::current_exception());
   }
@@ -268,10 +269,9 @@ void Subscriber::handle_peer_request(const ControlMessage &message, const std::s
     return;
   }
   const bool publish = request_type == kMessagePublish;
-  stream->send(
-      encode_request_error(publish ? RequestErrorCode::Uninterested : RequestErrorCode::NotSupported,
-                                  publish ? "subscriber is not accepting PUBLISH" : "subscriber-only implementation"),
-      true);
+  stream->send(encode_request_error(publish ? RequestErrorCode::Uninterested : RequestErrorCode::NotSupported,
+                                    publish ? "subscriber is not accepting PUBLISH" : "subscriber-only implementation"),
+               true);
   stream->abort_receive(0);
 }
 
@@ -281,9 +281,9 @@ void Subscriber::stop_subscription_now(RequestId request_id, std::string reason,
     spdlog::debug("stop_subscription_now: no subscription found for request_id={}", request_id);
     return;
   }
-  auto fsm = found->second;
-  fsm->terminate(std::move(reason));
-  if (auto stream = fsm->stream()) {
+  auto subscription = found->second;
+  subscription->terminate(std::move(reason));
+  if (auto stream = subscription->stream()) {
     stream->abort_send(stream_error_code);
     stream->abort_receive(stream_error_code);
   }

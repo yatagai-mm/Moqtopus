@@ -45,7 +45,7 @@ public:
   void stop_subscription(RequestId request_id);
 
 private:
-  class SubscriptionFSM;
+  class SubscriptionRequest;
   Subscriber(MsQuicClientConfig msquic_config, SubscriberConfig subscriber_config);
   void handle_data_stream(uint64_t type, const std::shared_ptr<StreamContext> &stream, ByteBuffer prefix,
                           bool fin) override;
@@ -57,7 +57,7 @@ private:
   size_t active_subscriptions() const override;
 
   std::unique_ptr<DataPlane> data_plane_;
-  std::unordered_map<RequestId, std::shared_ptr<SubscriptionFSM>> subscriptions_;
+  std::unordered_map<RequestId, std::shared_ptr<SubscriptionRequest>> subscriptions_;
 };
 
 } // namespace moq

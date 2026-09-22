@@ -60,7 +60,7 @@ public:
                  PublishDoneCode code = PublishDoneCode::TrackEnded, std::string reason = {});
 
 private:
-  class PublisherSubscriptionFSM;
+  class SubscriptionRequest;
   Publisher(MsQuicClientConfig msquic_config, PublisherConfig publisher_config);
   void handle_data_stream(uint64_t type, const std::shared_ptr<StreamContext> &stream, ByteBuffer prefix,
                           bool fin) override;
@@ -81,7 +81,7 @@ private:
   std::unique_ptr<SendDataPlane> send_plane_;
   TrackAlias next_track_alias_ = 0;
   std::unordered_set<RequestId> peer_request_ids_;
-  std::unordered_map<RequestId, std::shared_ptr<PublisherSubscriptionFSM>> subscriptions_;
+  std::unordered_map<RequestId, std::shared_ptr<SubscriptionRequest>> subscriptions_;
   std::vector<TrackNamespace> pending_announcements_;
   std::unordered_map<std::string, std::shared_ptr<StreamContext>> announced_namespaces_;
 };

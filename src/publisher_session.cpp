@@ -76,9 +76,9 @@ private:
   ByteBuffer buffer_;
 };
 
-class Publisher::PublisherSubscriptionFSM final : public StreamSink {
+class Publisher::SubscriptionRequest final : public StreamSink {
 public:
-  PublisherSubscriptionFSM(RequestId request_id, TrackNamespace track_namespace, TrackName track_name,
+  SubscriptionRequest(RequestId request_id, TrackNamespace track_namespace, TrackName track_name,
                            std::shared_ptr<StreamContext> stream, Publisher &owner)
       : request_id_(request_id), track_namespace_(std::move(track_namespace)), track_name_(std::move(track_name)),
         stream_(std::move(stream)), owner_(owner) {}
@@ -396,10 +396,10 @@ void Publisher::accept_subscribe(const ByteBuffer &payload, const std::shared_pt
     return reject(rejection->code, rejection->reason);
   }
 
-  auto fsm = std::make_shared<PublisherSubscriptionFSM>(subscribe->request_id, subscribe->track_namespace,
+  auto subscription = std::make_shared<SubscriptionRequest>(subscribe->request_id, subscribe->track_namespace,
                                                         subscribe->track_name, stream, *this);
-  stream->set_sink(fsm);
-  subscriptions_.emplace(subscribe->request_id, fsm);
+  stream->set_sink(subscription);
+  subscriptions_.emplace(subscribe->request_id, subscription);
 
   std::vector<Parameter> parameters;
   if (const auto largest = track->largest) {
@@ -412,14 +412,14 @@ void Publisher::accept_subscribe(const ByteBuffer &payload, const std::shared_pt
   spdlog::debug("accepted SUBSCRIBE request={} track=\"{}\" alias={}", subscribe->request_id, subscribe->track_name,
                 track_alias);
   const BytesView tail{leftover};
-  fsm->on_receive(&tail, 1, fin);
+  subscription->on_receive(&tail, 1, fin);
 }
 
 void Publisher::complete_subscription(RequestId request_id, PublishDoneCode code, std::string reason) {
   const auto found = subscriptions_.find(request_id);
   if (found != subscriptions_.end()) {
-    const auto fsm = found->second; // finish() erases the map entry
-    fsm->finish(code, reason);
+    const auto subscription = found->second; // finish() erases the map entry
+    subscription->finish(code, reason);
   }
 }
 
