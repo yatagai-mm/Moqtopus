@@ -8,8 +8,6 @@
 #include <spdlog/spdlog.h>
 
 namespace moq {
-
-// Buffers only until a stream is classified, then hands its bytes to the role.
 class Session::PeerStreamGate final : public StreamSink {
 public:
   PeerStreamGate(Session &session, std::weak_ptr<StreamContext> stream)

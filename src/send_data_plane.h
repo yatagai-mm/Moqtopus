@@ -39,20 +39,16 @@ public:
     std::unordered_set<RequestId> subscriptions;
   };
 
-  // ---- track registry ----
   bool register_track(PublishedTrack track);
   bool unregister_track(const TrackNamespace &track_namespace, const TrackName &track_name);
   const TrackEntry *find_track(const TrackNamespace &track_namespace, const TrackName &track_name) const;
   bool has_track_in_namespace(const TrackNamespace &track_namespace) const;
-  // ---- subscription lifecycle ----
   std::optional<RequestError> attach_subscription(RequestId request_id, TrackAlias track_alias,
                                                   const TrackNamespace &track_namespace, const TrackName &track_name,
                                                   const SubscriptionOptions &options);
   std::optional<RequestError> update_subscription(RequestId request_id, const SubscriptionOptions &options);
   // FIN on local completion, RESET on cancellation; returns opened stream count.
   uint64_t detach_subscription(RequestId request_id, std::optional<uint64_t> reset_error = {});
-
-  // ---- publishing ----
   void publish(const PublishedObject &object);
 
 private:

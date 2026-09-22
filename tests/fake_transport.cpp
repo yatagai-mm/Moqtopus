@@ -62,7 +62,7 @@ MsQuicTransportAdapter::~MsQuicTransportAdapter() {
   for (const auto &entry : active) {
     QUIC_STREAM_EVENT closed{};
     closed.Type = QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE;
-    entry.second->handle_event(entry.second->handle_, &closed);
+    StreamContext::stream_callback(entry.second->handle_, entry.second.get(), &closed);
   }
   delete fake::connection;
   fake::connection = nullptr;
@@ -75,7 +75,7 @@ std::shared_ptr<StreamContext> MsQuicTransportAdapter::open_stream(bool unidirec
   stream->id_ = fake::connection->streams.size() * 4 + (unidirectional ? 2 : 0);
   record->event = [weak = std::weak_ptr<StreamContext>(stream)](QUIC_STREAM_EVENT *event) {
     if (auto active = weak.lock())
-      active->handle_event(active->handle_, event);
+      StreamContext::stream_callback(active->handle_, active.get(), event);
   };
   streams_.emplace(stream.get(), stream);
   fake::connection->streams.push_back(std::move(record));

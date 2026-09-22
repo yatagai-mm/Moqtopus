@@ -8,8 +8,6 @@
 #include <vector>
 
 namespace moq {
-// StreamContext manages a single QUIC stream. Receive events are handed to the
-// installed StreamSink without copying: the sink parses the QUIC buffers in place.
 StreamContext::StreamContext(MsQuicTransportAdapter &adapter, HQUIC handle, bool unidirectional)
     : adapter_(adapter), handle_(handle), unidirectional_(unidirectional) {}
 
@@ -47,22 +45,20 @@ void StreamContext::abort_send(uint64_t error_code) {
 }
 
 QUIC_STATUS QUIC_API StreamContext::stream_callback(HQUIC stream, void *context, QUIC_STREAM_EVENT *event) {
-  return static_cast<StreamContext *>(context)->handle_event(stream, event);
-}
-
-QUIC_STATUS StreamContext::handle_event(HQUIC stream, QUIC_STREAM_EVENT *event) {
+  auto *self = static_cast<StreamContext *>(context);
   // Local copy so the sink can swap the stream over to a new sink mid-call.
-  const std::shared_ptr<StreamSink> sink = sink_;
+  const std::shared_ptr<StreamSink> sink = self->sink_;
   switch (event->Type) {
   case QUIC_STREAM_EVENT_START_COMPLETE:
-    id_ = event->START_COMPLETE.ID;
+    self->id_ = event->START_COMPLETE.ID;
     if (QUIC_FAILED(event->START_COMPLETE.Status)) {
-      adapter_.callbacks_.transport_error("StreamStart failed: " + quic_status_string(event->START_COMPLETE.Status));
+      self->adapter_.callbacks_.transport_error("StreamStart failed: " +
+                                                quic_status_string(event->START_COMPLETE.Status));
     }
     break;
   case QUIC_STREAM_EVENT_RECEIVE: {
     const bool fin = (event->RECEIVE.Flags & QUIC_RECEIVE_FLAG_FIN) != 0;
-    SPDLOG_TRACE("Stream {} received {} bytes fin={}", id(), event->RECEIVE.TotalBufferLength, fin);
+    SPDLOG_TRACE("Stream {} received {} bytes fin={}", self->id(), event->RECEIVE.TotalBufferLength, fin);
     if (!sink) {
       break;
     }
@@ -99,15 +95,15 @@ QUIC_STATUS StreamContext::handle_event(HQUIC stream, QUIC_STREAM_EVENT *event) 
     }
     break;
   case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
-    if (handle_) {
-      adapter_.api_->StreamClose(stream);
-      handle_ = nullptr;
+    if (self->handle_) {
+      self->adapter_.api_->StreamClose(stream);
+      self->handle_ = nullptr;
     }
-    sink_.reset(); // break the StreamContext <-> sink ownership cycle
+    self->sink_.reset(); // break the StreamContext <-> sink ownership cycle
     if (sink) {
       sink->on_stream_closed();
     }
-    adapter_.remove_stream(this);
+    self->adapter_.remove_stream(self);
     break;
   default:
     break;

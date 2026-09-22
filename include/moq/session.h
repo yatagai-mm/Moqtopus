@@ -62,6 +62,7 @@ protected:
   std::unique_ptr<MsQuicTransportAdapter> transport_;
 
 private:
+  // PeerStreamGate is the default gateway of incoming bytes
   class PeerStreamGate;
   void on_peer_stream_started(std::shared_ptr<StreamContext> stream);
   void handle_peer_setup();

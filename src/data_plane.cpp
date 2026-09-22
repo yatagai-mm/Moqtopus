@@ -285,7 +285,7 @@ void DataPlane::on_datagram(BytesView datagram) { deliver_datagram(datagram, tru
 
 void DataPlane::start_subgroup_stream(const std::shared_ptr<StreamContext> &stream, ByteBuffer prefix, bool fin) {
   auto receiver = std::make_shared<SubgroupReceiver>(*this, stream, std::move(prefix));
-  stream->set_sink(receiver);
+  stream->set_sink(receiver);            // swap StreamContext's StreamSink from PeerStreamGate to SubgroupReceiver
   receiver->on_receive(nullptr, 0, fin); // parse the prefix the gate buffered
 }
 

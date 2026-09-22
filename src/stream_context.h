@@ -20,8 +20,8 @@ struct PendingSend {
   QUIC_BUFFER buffer;
 };
 
-// Receives stream events directly on the QUIC callback thread. Chunk data is
-// only valid during the on_receive call: consume it or copy the tail needed.
+// StreamSink is a common interface for handling incoming bytes. StreamContext owns a StreamSink and forwards bytes to
+// it.
 class StreamSink {
 public:
   virtual ~StreamSink() = default;
@@ -33,6 +33,8 @@ public:
   virtual void on_stream_closed() {}
 };
 
+// StreamContext manages a single QUIC stream. StreamContext does not actually parses nor do any operation for the bytes
+// but translate it to BytesView and forward it to StreamSink, so later handlers can parse the bytes without copying.
 class StreamContext {
 public:
   StreamContext(const StreamContext &) = delete;
@@ -42,6 +44,8 @@ public:
   uint64_t id() const { return id_; }
 
   // A sink may swap itself out mid-call; later events go to the new sink.
+  // For example, incoming bytes are first handled by PeerStreamGate, which classifies the stream and then swaps in the
+  // role-specific handler such as SubgroupReceiver or Publisher::SubscriptionRequest.
   void set_sink(std::shared_ptr<StreamSink> sink) { sink_ = std::move(sink); }
 
   bool send(ByteBuffer bytes, bool fin = false);
@@ -56,7 +60,6 @@ private:
 
   StreamContext(MsQuicTransportAdapter &adapter, HQUIC handle, bool unidirectional);
   static QUIC_STATUS QUIC_API stream_callback(HQUIC stream, void *context, QUIC_STREAM_EVENT *event);
-  QUIC_STATUS handle_event(HQUIC stream, QUIC_STREAM_EVENT *event);
 
   MsQuicTransportAdapter &adapter_;
   HQUIC handle_ = nullptr;

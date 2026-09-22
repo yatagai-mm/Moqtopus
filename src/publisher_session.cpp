@@ -76,10 +76,11 @@ private:
   ByteBuffer buffer_;
 };
 
+// Publisher::SubscriptionRequest is the state machine for a single SUBSCRIBE request.
 class Publisher::SubscriptionRequest final : public StreamSink {
 public:
   SubscriptionRequest(RequestId request_id, TrackNamespace track_namespace, TrackName track_name,
-                           std::shared_ptr<StreamContext> stream, Publisher &owner)
+                      std::shared_ptr<StreamContext> stream, Publisher &owner)
       : request_id_(request_id), track_namespace_(std::move(track_namespace)), track_name_(std::move(track_name)),
         stream_(std::move(stream)), owner_(owner) {}
 
@@ -269,8 +270,8 @@ void Publisher::handle_data_stream(uint64_t, const std::shared_ptr<StreamContext
   stream->abort_receive(static_cast<uint64_t>(StreamResetCode::Cancelled));
 }
 
-void Publisher::handle_peer_request(const ControlMessage &first_message,
-                                    const std::shared_ptr<StreamContext> &stream, ByteBuffer leftover, bool fin) {
+void Publisher::handle_peer_request(const ControlMessage &first_message, const std::shared_ptr<StreamContext> &stream,
+                                    ByteBuffer leftover, bool fin) {
   const std::lock_guard<std::recursive_mutex> lock(mutex_);
   if (state_.phase == SessionPhase::Closing || state_.phase == SessionPhase::Closed) {
     return;
@@ -290,10 +291,9 @@ void Publisher::handle_peer_request(const ControlMessage &first_message,
       return;
     }
     const bool publish = first_message.type == kMessagePublish;
-    stream->send(
-        encode_request_error(publish ? RequestErrorCode::Uninterested : RequestErrorCode::NotSupported,
-                                    publish ? "publisher is not accepting PUBLISH" : "publisher-only implementation"),
-        true);
+    stream->send(encode_request_error(publish ? RequestErrorCode::Uninterested : RequestErrorCode::NotSupported,
+                                      publish ? "publisher is not accepting PUBLISH" : "publisher-only implementation"),
+                 true);
     stream->abort_receive(static_cast<uint64_t>(StreamResetCode::Cancelled));
   } catch (const std::exception &error) {
     begin_close(SessionCloseErrorCode::InternalError, error.what());
@@ -397,8 +397,8 @@ void Publisher::accept_subscribe(const ByteBuffer &payload, const std::shared_pt
   }
 
   auto subscription = std::make_shared<SubscriptionRequest>(subscribe->request_id, subscribe->track_namespace,
-                                                        subscribe->track_name, stream, *this);
-  stream->set_sink(subscription);
+                                                            subscribe->track_name, stream, *this);
+  stream->set_sink(subscription); // swap StreamContext's StreamSink from PeerStreamGate to SubscriptionRequest
   subscriptions_.emplace(subscribe->request_id, subscription);
 
   std::vector<Parameter> parameters;
