@@ -8,27 +8,10 @@
 #include <vector>
 
 namespace moq::detail {
-namespace {
-
-// context struct to pass to QUIC_API_TABLE.StreamSend
-struct PendingSend {
-  explicit PendingSend(ByteBuffer input) : bytes(std::move(input)) {
-    buffer.Length = static_cast<uint32_t>(bytes.size());
-    buffer.Buffer = bytes.data();
-  }
-
-  ByteBuffer bytes;
-  QUIC_BUFFER buffer{};
-};
-
-} // namespace
-
 // StreamContext manages a single QUIC stream. Receive events are handed to the
 // installed StreamSink without copying: the sink parses the QUIC buffers in place.
 StreamContext::StreamContext(MsQuicTransportAdapter &adapter, HQUIC handle, bool unidirectional)
     : adapter_(adapter), handle_(handle), unidirectional_(unidirectional) {}
-
-StreamContext::~StreamContext() = default;
 
 bool StreamContext::send(ByteBuffer bytes, bool fin) {
   if (!handle_) {
@@ -36,7 +19,7 @@ bool StreamContext::send(ByteBuffer bytes, bool fin) {
   }
   auto *pending = new PendingSend(std::move(bytes));
   const QUIC_SEND_FLAGS flags = fin ? QUIC_SEND_FLAG_FIN : QUIC_SEND_FLAG_NONE;
-  const QUIC_STATUS status = adapter_.api()->StreamSend(handle_, &pending->buffer, 1, flags, pending);
+  const QUIC_STATUS status = adapter_.api_->StreamSend(handle_, &pending->buffer, 1, flags, pending);
   if (QUIC_FAILED(status)) {
     delete pending;
     return false;
@@ -46,7 +29,7 @@ bool StreamContext::send(ByteBuffer bytes, bool fin) {
 
 void StreamContext::abort_receive(uint64_t error_code) {
   if (handle_) {
-    adapter_.api()->StreamShutdown(handle_, QUIC_STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code);
+    adapter_.api_->StreamShutdown(handle_, QUIC_STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code);
   }
 }
 
@@ -54,12 +37,12 @@ bool StreamContext::finish_send() {
   if (!handle_) {
     return false;
   }
-  return !QUIC_FAILED(adapter_.api()->StreamShutdown(handle_, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, 0));
+  return !QUIC_FAILED(adapter_.api_->StreamShutdown(handle_, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, 0));
 }
 
 void StreamContext::abort_send(uint64_t error_code) {
   if (handle_) {
-    adapter_.api()->StreamShutdown(handle_, QUIC_STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code);
+    adapter_.api_->StreamShutdown(handle_, QUIC_STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code);
   }
 }
 
@@ -72,7 +55,7 @@ QUIC_STATUS StreamContext::handle_event(HQUIC stream, QUIC_STREAM_EVENT *event) 
   const std::shared_ptr<StreamSink> sink = sink_;
   switch (event->Type) {
   case QUIC_STREAM_EVENT_START_COMPLETE:
-    set_id(event->START_COMPLETE.ID);
+    id_ = event->START_COMPLETE.ID;
     if (QUIC_FAILED(event->START_COMPLETE.Status)) {
       adapter_.callbacks_.transport_error("StreamStart failed: " + quic_status_string(event->START_COMPLETE.Status));
     }
@@ -116,7 +99,10 @@ QUIC_STATUS StreamContext::handle_event(HQUIC stream, QUIC_STREAM_EVENT *event) 
     }
     break;
   case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
-    close_handle(stream);
+    if (handle_) {
+      adapter_.api_->StreamClose(stream);
+      handle_ = nullptr;
+    }
     sink_.reset(); // break the StreamContext <-> sink ownership cycle
     if (sink) {
       sink->on_stream_closed();
@@ -127,13 +113,6 @@ QUIC_STATUS StreamContext::handle_event(HQUIC stream, QUIC_STREAM_EVENT *event) 
     break;
   }
   return QUIC_STATUS_SUCCESS;
-}
-
-void StreamContext::close_handle(HQUIC stream) {
-  if (handle_) {
-    adapter_.api()->StreamClose(stream);
-    handle_ = nullptr;
-  }
 }
 
 } // namespace moq::detail

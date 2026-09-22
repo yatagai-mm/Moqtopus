@@ -75,3 +75,17 @@ install(
     "${CMAKE_CURRENT_BINARY_DIR}/moqtopus-config-version.cmake"
   DESTINATION "${MOQTOPUS_INSTALL_CMAKEDIR}"
 )
+
+include(CTest)
+if(BUILD_TESTING AND PROJECT_IS_TOP_LEVEL)
+  # Exercise production protocol/session code with deterministic transport events.
+  set(MOQ_TEST_SRC ${MOQ_ALL_SRC})
+  list(FILTER MOQ_TEST_SRC EXCLUDE REGEX "msquic_transport_adapter\\.cpp$")
+  add_executable(moqtopus_protocol_tests tests/protocol.cpp tests/fake_transport.cpp ${MOQ_TEST_SRC})
+  target_compile_features(moqtopus_protocol_tests PRIVATE cxx_std_17)
+  target_include_directories(moqtopus_protocol_tests PRIVATE include src)
+  target_link_libraries(moqtopus_protocol_tests PRIVATE msquic spdlog::spdlog)
+  target_compile_options(moqtopus_protocol_tests PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-UNDEBUG>)
+  add_test(NAME protocol COMMAND moqtopus_protocol_tests)
+  set_tests_properties(protocol PROPERTIES TIMEOUT 20)
+endif()

@@ -1,4 +1,3 @@
-// Public API
 #pragma once
 
 #include "moq/client_config.h"
@@ -8,7 +7,7 @@
 
 #include <future>
 #include <memory>
-#include <string>
+#include <utility>
 
 namespace moq {
 
@@ -25,48 +24,36 @@ struct SubscriberConfig {
 };
 
 namespace detail {
-class SessionImpl;
+class Subscriber;
 }
 
-class SubscriptionHandle {
-public:
-  SubscriptionHandle() = default;
-
-  RequestId request_id() const;
-  std::optional<TrackAlias> track_alias() const;
-  SubscriptionStateSnapshot state() const;
-
-private:
-  friend class detail::SessionImpl;
-
-  SubscriptionHandle(RequestId request_id, std::weak_ptr<detail::SessionImpl> session);
-
-  RequestId request_id_ = 0;
-  std::weak_ptr<detail::SessionImpl> session_;
+struct Subscription {
+  RequestId request_id = 0;
+  TrackAlias track_alias = 0;
 };
 
-class MoqSubscriberSession {
+class Subscriber {
 public:
-  ~MoqSubscriberSession();
+  ~Subscriber();
 
-  MoqSubscriberSession(const MoqSubscriberSession &) = delete;
-  MoqSubscriberSession &operator=(const MoqSubscriberSession &) = delete;
+  Subscriber(const Subscriber &) = delete;
+  Subscriber &operator=(const Subscriber &) = delete;
 
-  static std::future<std::unique_ptr<MoqSubscriberSession>> connect(MsQuicClientConfig msquic_config,
-                                                                    SubscriberConfig subscriber_config = {});
+  static std::unique_ptr<Subscriber> connect(MsQuicClientConfig msquic_config, SubscriberConfig subscriber_config = {});
 
   std::future<void> ready();
   SessionStateSnapshot state() const;
 
-  std::future<SubscriptionHandle> subscribe(SubscribeRequest request, std::shared_ptr<ObjectHandler> handler);
+  std::future<Subscription> subscribe(SubscribeRequest request, std::shared_ptr<ObjectHandler> handler);
+  SubscriptionStateSnapshot subscription_state(RequestId request_id) const;
   std::future<RequestOk> request_update(RequestId existing_request_id, RequestUpdate update);
-  std::future<void> stop_subscription(RequestId request_id);
+  void stop_subscription(RequestId request_id);
   void close(SessionCloseErrorCode error = SessionCloseErrorCode::NoError);
 
 private:
-  explicit MoqSubscriberSession(std::shared_ptr<detail::SessionImpl> impl);
+  explicit Subscriber(std::shared_ptr<detail::Subscriber> impl) : impl_(std::move(impl)) {}
 
-  std::shared_ptr<detail::SessionImpl> impl_;
+  std::shared_ptr<detail::Subscriber> impl_;
 };
 
 } // namespace moq

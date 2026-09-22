@@ -44,82 +44,43 @@ RequestRejected::RequestRejected(RequestErrorCode code, uint64_t retry_interval,
 } // namespace moq
 
 namespace moq::codec {
-namespace {
-
-size_t varint_length(uint64_t value) {
-  size_t length = 1;
-  for (uint64_t max = 0x7f; length < 9 && value > max; max = (max << 7) | 0x7f) {
-    ++length;
-  }
-  return length;
-}
-
-uint8_t varint_value_bits(size_t length) { return length == 9 ? 0 : static_cast<uint8_t>(8 - length); }
-
-void append_u16(ByteBuffer &out, uint16_t value) {
-  out.push_back(static_cast<uint8_t>((value >> 8) & 0xff));
-  out.push_back(static_cast<uint8_t>(value & 0xff));
-}
-
-} // namespace
-
 void write_varint(ByteBuffer &out, uint64_t value) {
-  const size_t length = varint_length(value);
-  if (length == 9) {
-    out.push_back(0xff);
-    for (int shift = 56; shift >= 0; shift -= 8) {
-      out.push_back(static_cast<uint8_t>((value >> shift) & 0xff));
-    }
-    return;
-  }
-
-  const uint8_t usable_first_bits = varint_value_bits(length);
-  const uint64_t first_mask = usable_first_bits == 0 ? 0 : ((uint64_t{1} << usable_first_bits) - 1);
-  const uint8_t prefix = length == 1 ? 0 : static_cast<uint8_t>(0xff << (9 - length));
-  const int following_bytes = static_cast<int>(length - 1);
-  out.push_back(static_cast<uint8_t>(prefix | ((value >> (following_bytes * 8)) & first_mask)));
-  for (int index = following_bytes - 1; index >= 0; --index) {
-    out.push_back(static_cast<uint8_t>((value >> (index * 8)) & 0xff));
+  size_t length = 1;
+  for (uint64_t max = 0x7f; length < 9 && value > max; max = (max << 7) | 0x7f)
+    ++length;
+  // Lengths 1..8 have a unary prefix; length 9 uses 0xff and all 64 value bits.
+  const auto prefix = static_cast<uint8_t>(0xff << (9 - length));
+  out.push_back(length == 9 ? 0xff : static_cast<uint8_t>(prefix | (value >> ((length - 1) * 8))));
+  for (int shift = (static_cast<int>(length) - 2) * 8; shift >= 0; shift -= 8) {
+    out.push_back(static_cast<uint8_t>(value >> shift));
   }
 }
 
 VarintResult read_varint(const uint8_t *data, size_t size, size_t offset) {
-  if (offset >= size) {
+  if (offset >= size)
     return {};
-  }
-
   const uint8_t first = data[offset];
-  size_t leading_ones = 0;
-  while (leading_ones < 8 && (first & (0x80 >> leading_ones)) != 0) {
-    ++leading_ones;
-  }
-  const size_t length = leading_ones == 8 ? 9 : leading_ones + 1;
-  if (length > size - offset) {
+  size_t length = 1;
+  while (length < 9 && (first & (0x100 >> length)))
+    ++length;
+  if (length > size - offset)
     return {};
-  }
-
-  uint64_t value = 0;
-  if (length == 9) {
-    for (size_t index = 1; index < 9; ++index) {
-      value = (value << 8) | data[offset + index];
-    }
-  } else {
-    const uint8_t first_bits = varint_value_bits(length);
-    value = first_bits == 0 ? 0 : first & ((uint8_t{1} << first_bits) - 1);
-    for (size_t index = 1; index < length; ++index) {
-      value = (value << 8) | data[offset + index];
-    }
-  }
-  return VarintResult{DecodeStatus::Done, value, length};
+  uint64_t value = length == 9 ? 0 : first & (0xff >> length);
+  for (size_t index = 1; index < length; ++index)
+    value = (value << 8) | data[offset + index];
+  return {DecodeStatus::Done, value, length};
 }
 
-void append_control_message(ByteBuffer &out, uint64_t type, const ByteBuffer &payload) {
+ByteBuffer encode_control_message(uint64_t type, const ByteBuffer &payload) {
+  ByteBuffer out;
   if (payload.size() > std::numeric_limits<uint16_t>::max()) {
     throw std::length_error("MOQT control message payload exceeds 65535 bytes");
   }
   write_varint(out, type);
-  append_u16(out, static_cast<uint16_t>(payload.size()));
+  out.push_back(static_cast<uint8_t>(payload.size() >> 8));
+  out.push_back(static_cast<uint8_t>(payload.size()));
   out.insert(out.end(), payload.begin(), payload.end());
+  return out;
 }
 
 ControlMessageResult read_control_message(const ByteBuffer &bytes, size_t offset) {
@@ -152,7 +113,7 @@ void write_track_namespace(ByteBuffer &out, const TrackNamespace &name_space) {
       throw std::invalid_argument("invalid MOQT track namespace field");
     }
     write_varint(out, field.size());
-    detail::append_bytes(out, field);
+    out.insert(out.end(), field.begin(), field.end());
     total_size += field.size();
   }
 }

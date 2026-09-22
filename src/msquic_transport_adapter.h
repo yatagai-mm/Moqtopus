@@ -40,13 +40,11 @@ public:
   bool send_datagram(ByteBuffer bytes);
   void shutdown(moq::SessionCloseErrorCode error_code);
 
-  const QUIC_API_TABLE *api() const;
-
 private:
   friend class StreamContext;
 
   static QUIC_STATUS QUIC_API connection_callback(HQUIC connection, void *context, QUIC_CONNECTION_EVENT *event);
-  QUIC_STATUS handle_connection_event(HQUIC connection, QUIC_CONNECTION_EVENT *event);
+  QUIC_STATUS handle_connection_event(QUIC_CONNECTION_EVENT *event);
   void remove_stream(StreamContext *stream);
 
   MsQuicClientConfig config_;
@@ -61,7 +59,6 @@ private:
   bool shutdown_complete_ = false;
   std::mutex streams_mutex_;
   std::unordered_map<StreamContext *, std::shared_ptr<StreamContext>> streams_;
-  bool started_ = false;
 };
 
 } // namespace moq::detail

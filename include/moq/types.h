@@ -30,9 +30,9 @@ struct BytesView {
   BytesView(const ByteBuffer &owned) : data(owned.data()), size(owned.size()) {}
 
   const uint8_t *begin() const { return data; }
-  const uint8_t *end() const { return data + size; }
+  const uint8_t *end() const { return size ? data + size : data; }
   bool empty() const { return size == 0; }
-  ByteBuffer to_owned() const { return ByteBuffer(data, data + size); }
+  ByteBuffer to_owned() const { return empty() ? ByteBuffer{} : ByteBuffer(begin(), end()); }
 };
 
 struct Location {
@@ -52,7 +52,6 @@ struct Parameter {
 };
 
 struct SubscribeRequest {
-  std::optional<RequestId> request_id;
   TrackNamespace track_namespace;
   TrackName track_name;
   std::vector<Parameter> parameters;

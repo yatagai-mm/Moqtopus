@@ -53,9 +53,6 @@ constexpr uint64_t kObjectStatusEndOfTrack = 0x4;
 
 // Setup option identifiers
 enum class SetupOption : uint64_t {
-  // Setup option = None does not exist on the wire;
-  // it is only used as a placeholder for "no previous option"
-  None = 0x00,
   Path = 0x01,
   Authority = 0x05,
   MoqtImplementation = 0x07,
@@ -112,12 +109,9 @@ struct SubscriptionFilter {
 // REQUEST_UPDATE. An absent optional means the parameter was not present.
 struct SubscriptionOptions {
   std::optional<uint8_t> forward;
-  std::optional<uint8_t> subscriber_priority;
-  std::optional<uint8_t> group_order;
   std::optional<SubscriptionFilter> filter;
   std::optional<uint64_t> subgroup_delivery_timeout;
   std::optional<uint64_t> object_delivery_timeout;
-  std::optional<uint64_t> new_group_request;
 };
 
 void write_varint(ByteBuffer &out, uint64_t value);
@@ -125,7 +119,7 @@ VarintResult read_varint(const uint8_t *data, size_t size, size_t offset = 0);
 inline VarintResult read_varint(const ByteBuffer &bytes, size_t offset = 0) {
   return read_varint(bytes.data(), bytes.size(), offset);
 }
-void append_control_message(ByteBuffer &out, uint64_t type, const ByteBuffer &payload);
+ByteBuffer encode_control_message(uint64_t type, const ByteBuffer &payload);
 ControlMessageResult read_control_message(const ByteBuffer &bytes, size_t offset = 0);
 
 ByteBuffer encode_setup(std::string authority, std::string path);
@@ -148,10 +142,9 @@ bool decode_subscription_options(const std::vector<Parameter> &parameters, Subsc
                                  std::string &error);
 ByteBuffer encode_subscribe_ok(TrackAlias track_alias, std::vector<Parameter> parameters,
                                const ObjectProperties &track_properties);
-ByteBuffer encode_request_ok(std::vector<Parameter> parameters, const ObjectProperties &track_properties = {});
+ByteBuffer encode_request_ok(std::vector<Parameter> parameters);
 ByteBuffer encode_publish_done(uint64_t status_code, uint64_t stream_count, const std::string &reason);
-ByteBuffer encode_publish_namespace(RequestId request_id, const TrackNamespace &track_namespace,
-                                    std::vector<Parameter> parameters = {});
+ByteBuffer encode_publish_namespace(RequestId request_id, const TrackNamespace &track_namespace);
 
 // Publisher-side data plane serialization
 ByteBuffer encode_object_datagram(TrackAlias track_alias, GroupId group_id, ObjectId object_id, uint8_t priority,

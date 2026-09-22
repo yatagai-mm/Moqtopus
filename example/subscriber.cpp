@@ -1,3 +1,4 @@
+#include "arguments.h"
 #include "moq/subscriber_session.h"
 
 #include <atomic>
@@ -17,37 +18,6 @@
 namespace {
 
 std::atomic_bool interrupted{false};
-
-bool ParsePort(const char *value, uint16_t &port) {
-  try {
-    const unsigned long parsed = std::stoul(value);
-    if (parsed == 0 || parsed > 65535) {
-      return false;
-    }
-    port = static_cast<uint16_t>(parsed);
-    return true;
-  } catch (...) {
-    return false;
-  }
-}
-
-moq::TrackNamespace ParseNamespace(const std::string &value) {
-  moq::TrackNamespace fields;
-  size_t start = 0;
-  while (start < value.size()) {
-    const size_t slash = value.find('/', start);
-    const size_t end = slash == std::string::npos ? value.size() : slash;
-    if (end == start) {
-      throw std::invalid_argument("namespace fields must not be empty");
-    }
-    fields.push_back(value.substr(start, end - start));
-    if (slash == std::string::npos) {
-      break;
-    }
-    start = slash + 1;
-  }
-  return fields;
-}
 
 const char *DeliveryName(moq::DeliveryKind delivery) {
   switch (delivery) {
@@ -124,8 +94,8 @@ private:
 };
 
 void Usage(const char *argv0) {
-  spdlog::error("usage: {} <host> <port> <namespace[/field...]> <track-name> [path] [alpn]", argv0);
-  spdlog::error("example: {} localhost 4433 camera/front video / moqt-18", argv0);
+  spdlog::error("usage: {} <host> <port> <namespace[/field...]> <track-name> [path]", argv0);
+  spdlog::error("example: {} localhost 4433 camera/front video /", argv0);
 }
 
 } // namespace
@@ -137,7 +107,7 @@ int main(int argc, char **argv) {
     spdlog::set_level(spdlog::level::debug);
   }
 
-  if (argc < 5 || argc > 7) {
+  if (argc < 5 || argc > 6) {
     Usage(argv[0]);
     return 2;
   }
@@ -150,9 +120,8 @@ int main(int argc, char **argv) {
       return 2;
     }
     client_config.path = argc >= 6 ? argv[5] : "/";
-    client_config.alpn = argc >= 7 ? argv[6] : "moqt-18";
 
-    auto session = moq::MoqSubscriberSession::connect(client_config).get();
+    auto session = moq::Subscriber::connect(client_config);
     session->ready().get();
 
     moq::SubscribeRequest request;
@@ -160,18 +129,14 @@ int main(int argc, char **argv) {
     request.track_name = argv[4];
 
     auto handler = std::make_shared<PrintingHandler>();
-    const moq::SubscriptionHandle subscription = session->subscribe(std::move(request), handler).get();
-    std::cout << "subscribed request=" << subscription.request_id();
-    if (subscription.track_alias()) {
-      std::cout << " alias=" << *subscription.track_alias();
-    }
-    std::cout << '\n';
+    const moq::Subscription subscription = session->subscribe(std::move(request), handler).get();
+    std::cout << "subscribed request=" << subscription.request_id << " alias=" << subscription.track_alias << '\n';
 
     while (!interrupted.load() && !handler->stopped()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    session->stop_subscription(subscription.request_id()).get();
+    session->stop_subscription(subscription.request_id);
     session->close();
 
     std::cout << "received objects=" << handler->object_count() << " payload_bytes=" << handler->total_payload_bytes()

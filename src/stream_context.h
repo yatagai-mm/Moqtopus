@@ -12,6 +12,14 @@ namespace moq::detail {
 // including msquic_transport_adapter.h will cause circular dependency, so forward declare here
 class MsQuicTransportAdapter;
 
+// MsQuic retains both bytes and descriptor until send completion.
+struct PendingSend {
+  explicit PendingSend(ByteBuffer input)
+      : bytes(std::move(input)), buffer{static_cast<uint32_t>(bytes.size()), bytes.data()} {}
+  ByteBuffer bytes;
+  QUIC_BUFFER buffer;
+};
+
 // Receives stream events directly on the QUIC callback thread. Chunk data is
 // only valid during the on_receive call: consume it or copy the tail needed.
 class StreamSink {
@@ -27,14 +35,11 @@ public:
 
 class StreamContext : public std::enable_shared_from_this<StreamContext> {
 public:
-  ~StreamContext();
-
   StreamContext(const StreamContext &) = delete;
   StreamContext &operator=(const StreamContext &) = delete;
 
   bool unidirectional() const { return unidirectional_; }
   uint64_t id() const { return id_; }
-  void set_id(uint64_t id) { id_ = id; }
 
   // A sink may swap itself out mid-call; later events go to the new sink.
   void set_sink(std::shared_ptr<StreamSink> sink) { sink_ = std::move(sink); }
@@ -52,7 +57,6 @@ private:
   StreamContext(MsQuicTransportAdapter &adapter, HQUIC handle, bool unidirectional);
   static QUIC_STATUS QUIC_API stream_callback(HQUIC stream, void *context, QUIC_STREAM_EVENT *event);
   QUIC_STATUS handle_event(HQUIC stream, QUIC_STREAM_EVENT *event);
-  void close_handle(HQUIC stream);
 
   MsQuicTransportAdapter &adapter_;
   HQUIC handle_ = nullptr;

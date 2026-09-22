@@ -12,26 +12,12 @@
 
 namespace moq::detail {
 
-class TrackReceiveValidation {
-public:
-  bool validate(const Object &object, std::string &error) const;
-  void mark_final_object_in_group(GroupId group_id, ObjectId object_id) { final_object_in_group_[group_id] = object_id; }
-  void mark_final_object_in_track(Location location) { final_object_in_track_ = location; }
-
-private:
-  std::unordered_map<GroupId, ObjectId> final_object_in_group_;
-  std::optional<Location> final_object_in_track_;
-};
-
 struct ReceiveRoute {
   RequestId request_id = 0;
-  TrackAlias track_alias = 0;
   std::atomic_bool active{true};
   std::shared_ptr<ObjectHandler> handler;
-  TrackReceiveValidation validation;
-  std::atomic<uint8_t> default_publisher_priority{128};
-  std::atomic<uint64_t> received_stream_count{0};
-  std::atomic<uint64_t> expected_stream_count{0};
+  std::unordered_map<GroupId, ObjectId> final_object_in_group;
+  std::optional<Location> final_object_in_track;
 };
 
 class DataPlane {
@@ -53,16 +39,14 @@ public:
 
   UnknownAliasPolicy unknown_alias_policy() const { return config_.unknown_alias_policy; }
   void deliver(ReceiveRoute &route, const Object &object);
-  void protocol_error(std::string message);
-  void track_error(RequestId request_id, std::string message);
+  ProtocolErrorCallback protocol_error;
+  TrackErrorCallback track_error;
 
 private:
   void deliver_datagram(BytesView bytes, bool allow_buffer);
   void buffer_unknown_datagram(TrackAlias alias, BytesView bytes);
 
   SubscriberConfig config_;
-  ProtocolErrorCallback protocol_error_callback_;
-  TrackErrorCallback track_error_callback_;
   mutable std::shared_mutex routes_mutex_;
   std::unordered_map<TrackAlias, std::shared_ptr<ReceiveRoute>> routes_by_alias_;
   std::unordered_map<TrackAlias, std::vector<ByteBuffer>> unknown_datagrams_;

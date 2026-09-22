@@ -35,17 +35,6 @@ void throw_if_failed(QUIC_STATUS status, const char *what) {
   }
 }
 
-// Owns the datagram bytes until MsQuic reports a final send state.
-struct PendingDatagram {
-  explicit PendingDatagram(ByteBuffer input) : bytes(std::move(input)) {
-    buffer.Length = static_cast<uint32_t>(bytes.size());
-    buffer.Buffer = bytes.data();
-  }
-
-  ByteBuffer bytes;
-  QUIC_BUFFER buffer{};
-};
-
 } // namespace
 
 MsQuicTransportAdapter::MsQuicTransportAdapter(MsQuicClientConfig config, Callbacks callbacks)
@@ -58,8 +47,8 @@ MsQuicTransportAdapter::MsQuicTransportAdapter(MsQuicClientConfig config, Callba
   throw_if_failed(api_->RegistrationOpen(&registration_config, &registration_), "RegistrationOpen");
 
   QUIC_BUFFER alpn{};
-  alpn.Length = static_cast<uint32_t>(config_.alpn.size());
-  alpn.Buffer = reinterpret_cast<uint8_t *>(config_.alpn.data());
+  alpn.Length = sizeof(kAlpn) - 1;
+  alpn.Buffer = reinterpret_cast<uint8_t *>(const_cast<char *>(kAlpn));
 
   QUIC_SETTINGS settings{};
   settings.IdleTimeoutMs = static_cast<uint64_t>(config_.idle_timeout.count());
@@ -71,8 +60,9 @@ MsQuicTransportAdapter::MsQuicTransportAdapter(MsQuicClientConfig config, Callba
   settings.DatagramReceiveEnabled = TRUE;
   settings.IsSet.DatagramReceiveEnabled = TRUE;
 
-  throw_if_failed(api_->ConfigurationOpen(registration_, &alpn, 1, &settings, sizeof(settings), nullptr, &configuration_),
-                  "ConfigurationOpen");
+  throw_if_failed(
+      api_->ConfigurationOpen(registration_, &alpn, 1, &settings, sizeof(settings), nullptr, &configuration_),
+      "ConfigurationOpen");
 
   QUIC_CREDENTIAL_CONFIG credential{};
   credential.Type = QUIC_CREDENTIAL_TYPE_NONE;
@@ -120,13 +110,9 @@ MsQuicTransportAdapter::~MsQuicTransportAdapter() {
 }
 
 void MsQuicTransportAdapter::start() {
-  if (started_) {
-    return;
-  }
   throw_if_failed(api_->ConnectionStart(connection_, configuration_, QUIC_ADDRESS_FAMILY_UNSPEC, config_.host.c_str(),
                                         config_.port),
                   "ConnectionStart");
-  started_ = true;
 }
 
 std::shared_ptr<StreamContext> MsQuicTransportAdapter::open_stream(bool unidirectional) {
@@ -156,7 +142,7 @@ bool MsQuicTransportAdapter::send_datagram(ByteBuffer bytes) {
   if (!connection_) {
     return false;
   }
-  auto *pending = new PendingDatagram(std::move(bytes));
+  auto *pending = new PendingSend(std::move(bytes));
   const QUIC_STATUS status = api_->DatagramSend(connection_, &pending->buffer, 1, QUIC_SEND_FLAG_NONE, pending);
   if (QUIC_FAILED(status)) {
     delete pending;
@@ -176,14 +162,11 @@ void MsQuicTransportAdapter::shutdown(moq::SessionCloseErrorCode error_code) {
   }
 }
 
-const QUIC_API_TABLE *MsQuicTransportAdapter::api() const { return api_; }
-
-QUIC_STATUS QUIC_API MsQuicTransportAdapter::connection_callback(HQUIC connection, void *context,
-                                                                 QUIC_CONNECTION_EVENT *event) {
-  return static_cast<MsQuicTransportAdapter *>(context)->handle_connection_event(connection, event);
+QUIC_STATUS QUIC_API MsQuicTransportAdapter::connection_callback(HQUIC, void *context, QUIC_CONNECTION_EVENT *event) {
+  return static_cast<MsQuicTransportAdapter *>(context)->handle_connection_event(event);
 }
 
-QUIC_STATUS MsQuicTransportAdapter::handle_connection_event(HQUIC connection, QUIC_CONNECTION_EVENT *event) {
+QUIC_STATUS MsQuicTransportAdapter::handle_connection_event(QUIC_CONNECTION_EVENT *event) {
   switch (event->Type) {
   case QUIC_CONNECTION_EVENT_CONNECTED:
     callbacks_.connected();
@@ -192,7 +175,7 @@ QUIC_STATUS MsQuicTransportAdapter::handle_connection_event(HQUIC connection, QU
     const bool unidirectional = (event->PEER_STREAM_STARTED.Flags & QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL) != 0;
     auto stream =
         std::shared_ptr<StreamContext>(new StreamContext(*this, event->PEER_STREAM_STARTED.Stream, unidirectional));
-    stream->set_id(GetStreamID(api_, event->PEER_STREAM_STARTED.Stream));
+    stream->id_ = GetStreamID(api_, event->PEER_STREAM_STARTED.Stream);
     api_->SetCallbackHandler(event->PEER_STREAM_STARTED.Stream,
                              reinterpret_cast<void *>(StreamContext::stream_callback), stream.get());
     {
@@ -208,7 +191,7 @@ QUIC_STATUS MsQuicTransportAdapter::handle_connection_event(HQUIC connection, QU
     break;
   case QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED:
     if (QUIC_DATAGRAM_SEND_STATE_IS_FINAL(event->DATAGRAM_SEND_STATE_CHANGED.State)) {
-      delete static_cast<PendingDatagram *>(event->DATAGRAM_SEND_STATE_CHANGED.ClientContext);
+      delete static_cast<PendingSend *>(event->DATAGRAM_SEND_STATE_CHANGED.ClientContext);
     }
     break;
   case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT: {

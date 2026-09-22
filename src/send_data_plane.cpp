@@ -28,43 +28,20 @@ bool nonzero(const std::optional<uint64_t> &value) { return value && *value != 0
 
 SendDataPlane::SendDataPlane(Callbacks callbacks) : callbacks_(std::move(callbacks)) {}
 
-std::string SendDataPlane::make_track_key(const TrackNamespace &track_namespace, const TrackName &track_name) {
-  std::string key;
-  for (const std::string &field : track_namespace) {
-    key += std::to_string(field.size());
-    key += ':';
-    key += field;
-  }
-  key += '/';
-  key += track_name;
-  return key;
-}
-
 bool SendDataPlane::register_track(PublishedTrack track) {
-  const std::string key = make_track_key(track.track_namespace, track.track_name);
+  const TrackKey key{track.track_namespace, track.track_name};
   return tracks_.emplace(key, TrackEntry{std::move(track), std::nullopt, {}}).second;
 }
 
 bool SendDataPlane::unregister_track(const TrackNamespace &track_namespace, const TrackName &track_name) {
-  const auto entry = tracks_.find(make_track_key(track_namespace, track_name));
-  if (entry == tracks_.end()) {
-    return false;
-  }
-  if (!entry->second.subscriptions.empty()) {
-    // The session finishes subscriptions before unregistering; reset defensively.
-    const std::vector<RequestId> request_ids(entry->second.subscriptions.begin(), entry->second.subscriptions.end());
-    for (const RequestId request_id : request_ids) {
-      detach_subscription(request_id, true, static_cast<uint64_t>(StreamResetCode::Cancelled));
-    }
-  }
-  tracks_.erase(entry);
-  return true;
+  // The session ends subscriptions before removing their track.
+  return tracks_.erase(TrackKey{track_namespace, track_name}) != 0;
 }
 
-const PublishedTrack *SendDataPlane::find_track(const TrackNamespace &track_namespace,
-                                                const TrackName &track_name) const {
-  const auto entry = tracks_.find(make_track_key(track_namespace, track_name));
-  return entry == tracks_.end() ? nullptr : &entry->second.track;
+const SendDataPlane::TrackEntry *SendDataPlane::find_track(const TrackNamespace &track_namespace,
+                                                           const TrackName &track_name) const {
+  const auto entry = tracks_.find(TrackKey{track_namespace, track_name});
+  return entry == tracks_.end() ? nullptr : &entry->second;
 }
 
 bool SendDataPlane::has_track_in_namespace(const TrackNamespace &track_namespace) const {
@@ -74,21 +51,6 @@ bool SendDataPlane::has_track_in_namespace(const TrackNamespace &track_namespace
     }
   }
   return false;
-}
-
-std::vector<RequestId> SendDataPlane::subscriptions_for_track(const TrackNamespace &track_namespace,
-                                                              const TrackName &track_name) const {
-  const auto entry = tracks_.find(make_track_key(track_namespace, track_name));
-  if (entry == tracks_.end()) {
-    return {};
-  }
-  return {entry->second.subscriptions.begin(), entry->second.subscriptions.end()};
-}
-
-std::optional<Location> SendDataPlane::largest_location(const TrackNamespace &track_namespace,
-                                                        const TrackName &track_name) const {
-  const auto entry = tracks_.find(make_track_key(track_namespace, track_name));
-  return entry == tracks_.end() ? std::nullopt : entry->second.largest;
 }
 
 void SendDataPlane::resolve_filter(const codec::SubscriptionFilter &filter, const std::optional<Location> &largest,
@@ -126,55 +88,42 @@ bool SendDataPlane::passes_filter(const SubscriptionSend &subscription, GroupId 
   return !subscription.end_group || group_id <= *subscription.end_group;
 }
 
-SubscriptionDecision SendDataPlane::attach_subscription(RequestId request_id, TrackAlias track_alias,
-                                                        const TrackNamespace &track_namespace,
-                                                        const TrackName &track_name,
-                                                        const codec::SubscriptionOptions &options) {
+std::optional<RequestError> SendDataPlane::attach_subscription(RequestId request_id, TrackAlias track_alias,
+                                                               const TrackNamespace &track_namespace,
+                                                               const TrackName &track_name,
+                                                               const codec::SubscriptionOptions &options) {
   if (nonzero(options.subgroup_delivery_timeout) || nonzero(options.object_delivery_timeout)) {
-    return SubscriptionDecision::reject(RequestErrorCode::NotSupported, "delivery timeouts are not supported");
+    return RequestError{RequestErrorCode::NotSupported, 0, "delivery timeouts are not supported"};
   }
-  const auto entry = tracks_.find(make_track_key(track_namespace, track_name));
+  const auto entry = tracks_.find(TrackKey{track_namespace, track_name});
   if (entry == tracks_.end()) {
-    return SubscriptionDecision::reject(RequestErrorCode::DoesNotExist, "track is not registered");
+    return RequestError{RequestErrorCode::DoesNotExist, 0, "track is not registered"};
   }
-  if (subscriptions_.find(request_id) != subscriptions_.end()) {
-    // TODO(moqt-draft-21): Draft-21 and later permit multiple subscriptions to a
-    // single track when their Request IDs differ. DuplicateSubscription must not
-    // be emitted solely because another Request ID already subscribes to this track.
-    return SubscriptionDecision::reject(RequestErrorCode::DuplicateSubscription,
-                                        "request ID already has an established subscription");
-  }
-
   SubscriptionSend subscription;
   subscription.request_id = request_id;
   subscription.track_alias = track_alias;
   subscription.track_key = entry->first;
   subscription.forward = options.forward.value_or(1) != 0;
-  subscription.subscriber_priority = options.subscriber_priority.value_or(128);
-  subscription.group_order = options.group_order.value_or(entry->second.track.default_group_order);
   if (options.filter) {
     resolve_filter(*options.filter, entry->second.largest, subscription.start, subscription.end_group);
     if (subscription.end_group && entry->second.largest && entry->second.largest->group > *subscription.end_group) {
-      return SubscriptionDecision::reject(RequestErrorCode::InvalidRange, "requested range was already published");
+      return RequestError{RequestErrorCode::InvalidRange, 0, "requested range was already published"};
     }
-  }
-  if (subscription.forward) {
-    subscription.joining_location = entry->second.largest;
   }
 
   entry->second.subscriptions.insert(request_id);
   subscriptions_.emplace(request_id, std::move(subscription));
-  return SubscriptionDecision::accept();
+  return {};
 }
 
-SubscriptionDecision SendDataPlane::update_subscription(RequestId request_id,
-                                                        const codec::SubscriptionOptions &options) {
+std::optional<RequestError> SendDataPlane::update_subscription(RequestId request_id,
+                                                               const codec::SubscriptionOptions &options) {
   const auto found = subscriptions_.find(request_id);
   if (found == subscriptions_.end()) {
-    return SubscriptionDecision::reject(RequestErrorCode::DoesNotExist, "subscription is not established");
+    return RequestError{RequestErrorCode::DoesNotExist, 0, "subscription is not established"};
   }
   if (nonzero(options.subgroup_delivery_timeout) || nonzero(options.object_delivery_timeout)) {
-    return SubscriptionDecision::reject(RequestErrorCode::NotSupported, "delivery timeouts are not supported");
+    return RequestError{RequestErrorCode::NotSupported, 0, "delivery timeouts are not supported"};
   }
   SubscriptionSend &subscription = found->second;
   const auto track = tracks_.find(subscription.track_key);
@@ -185,39 +134,27 @@ SubscriptionDecision SendDataPlane::update_subscription(RequestId request_id,
     std::optional<GroupId> end_group;
     resolve_filter(*options.filter, largest, start, end_group);
     if (end_group && largest && largest->group > *end_group) {
-      return SubscriptionDecision::reject(RequestErrorCode::InvalidRange, "requested range was already published");
+      return RequestError{RequestErrorCode::InvalidRange, 0, "requested range was already published"};
     }
     subscription.start = start;
     subscription.end_group = end_group;
   }
-  if (options.subscriber_priority) {
-    subscription.subscriber_priority = *options.subscriber_priority;
-  }
   if (options.forward) {
     const bool forward = *options.forward != 0;
-    if (forward && !subscription.forward) {
-      subscription.joining_location = largest; // Joining Location (Section 5.1)
-    }
     subscription.forward = forward;
   }
-  return SubscriptionDecision::accept();
+  return {};
 }
 
-uint64_t SendDataPlane::finish_subscription(RequestId request_id) { return detach_subscription(request_id, false, 0); }
-
-uint64_t SendDataPlane::reset_subscription(RequestId request_id, uint64_t reset_error_code) {
-  return detach_subscription(request_id, true, reset_error_code);
-}
-
-uint64_t SendDataPlane::detach_subscription(RequestId request_id, bool reset, uint64_t reset_error_code) {
+uint64_t SendDataPlane::detach_subscription(RequestId request_id, std::optional<uint64_t> reset_error) {
   const auto found = subscriptions_.find(request_id);
   if (found == subscriptions_.end()) {
     return 0;
   }
   SubscriptionSend &subscription = found->second;
   for (auto &open : subscription.streams) {
-    if (reset) {
-      open.second.stream->abort_send(reset_error_code);
+    if (reset_error) {
+      open.second.stream->abort_send(*reset_error);
     } else {
       open.second.stream->finish_send();
     }
@@ -232,7 +169,7 @@ uint64_t SendDataPlane::detach_subscription(RequestId request_id, bool reset, ui
 }
 
 void SendDataPlane::publish(const PublishedObject &object) {
-  const auto track_it = tracks_.find(make_track_key(object.track_namespace, object.track_name));
+  const auto track_it = tracks_.find(TrackKey{object.track_namespace, object.track_name});
   if (track_it == tracks_.end()) {
     spdlog::warn("publish for unregistered track \"{}\" dropped", object.track_name);
     return;
@@ -291,7 +228,7 @@ void SendDataPlane::publish(const PublishedObject &object) {
 }
 
 void SendDataPlane::send_on_subgroup_stream(SubscriptionSend &subscription, const PublishedObject &object) {
-  const SubgroupId subgroup_id = object.subgroup_id.value_or(0);
+  const SubgroupId subgroup_id = object.subgroup_id;
   const std::pair<GroupId, SubgroupId> key{object.group_id, subgroup_id};
 
   auto open_it = subscription.streams.find(key);

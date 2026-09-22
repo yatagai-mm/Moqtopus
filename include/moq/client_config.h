@@ -7,10 +7,11 @@
 
 namespace moq {
 
+inline constexpr char kAlpn[] = "moqt-18";
+
 struct MsQuicClientConfig {
   std::string host;
   uint16_t port = 0;
-  std::string alpn = "moqt-18";
   std::string authority;
   std::string path = "/";
   bool disable_certificate_validation = true;

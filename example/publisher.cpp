@@ -1,3 +1,4 @@
+#include "arguments.h"
 #include "moq/publisher_session.h"
 
 #include <atomic>
@@ -17,40 +18,9 @@ std::atomic_bool interrupted{false};
 
 void HandleSignal(int) { interrupted.store(true); }
 
-bool ParsePort(const char *value, uint16_t &port) {
-  try {
-    const unsigned long parsed = std::stoul(value);
-    if (parsed == 0 || parsed > 65535) {
-      return false;
-    }
-    port = static_cast<uint16_t>(parsed);
-    return true;
-  } catch (...) {
-    return false;
-  }
-}
-
-moq::TrackNamespace ParseNamespace(const std::string &value) {
-  moq::TrackNamespace fields;
-  size_t start = 0;
-  while (start < value.size()) {
-    const size_t slash = value.find('/', start);
-    const size_t end = slash == std::string::npos ? value.size() : slash;
-    if (end == start) {
-      throw std::invalid_argument("namespace fields must not be empty");
-    }
-    fields.push_back(value.substr(start, end - start));
-    if (slash == std::string::npos) {
-      break;
-    }
-    start = slash + 1;
-  }
-  return fields;
-}
-
 void Usage(const char *argv0) {
-  spdlog::error("usage: {} <host> <port> <namespace[/field...]> <track-name> [path] [alpn] [stream|datagram]", argv0);
-  spdlog::error("example: {} localhost 4433 camera/front video / moqt-18 stream", argv0);
+  spdlog::error("usage: {} <host> <port> <namespace[/field...]> <track-name> [path] [stream|datagram]", argv0);
+  spdlog::error("example: {} localhost 4433 camera/front video / stream", argv0);
 }
 
 } // namespace
@@ -62,7 +32,7 @@ int main(int argc, char **argv) {
     spdlog::set_level(spdlog::level::debug);
   }
 
-  if (argc < 5 || argc > 8) {
+  if (argc < 5 || argc > 7) {
     Usage(argv[0]);
     return 2;
   }
@@ -78,13 +48,12 @@ int main(int argc, char **argv) {
       return 2;
     }
     client_config.path = argc >= 6 ? argv[5] : "/";
-    client_config.alpn = argc >= 7 ? argv[6] : "moqt-18";
-    const bool use_datagrams = argc >= 8 && std::string(argv[7]) == "datagram";
+    const bool use_datagrams = argc >= 7 && std::string(argv[6]) == "datagram";
 
     const moq::TrackNamespace track_namespace = ParseNamespace(argv[3]);
     const moq::TrackName track_name = argv[4];
 
-    auto session = moq::MoqPublisherSession::connect(client_config).get();
+    auto session = moq::Publisher::connect(client_config);
     session->ready().get();
     spdlog::info("session ready; publishing track \"{}\" via {}", track_name,
                  use_datagrams ? "datagrams" : "subgroup streams");
@@ -106,8 +75,7 @@ int main(int argc, char **argv) {
       object.group_id = group_id;
       object.object_id = object_id;
       object.delivery_kind = use_datagrams ? moq::DeliveryKind::Datagram : moq::DeliveryKind::SubgroupStream;
-      const std::string text =
-          "moqtopus object " + std::to_string(group_id) + "/" + std::to_string(object_id);
+      const std::string text = "moqtopus object " + std::to_string(group_id) + "/" + std::to_string(object_id);
       object.payload.assign(text.begin(), text.end());
       object.end_of_group = object_id + 1 == kObjectsPerGroup;
 

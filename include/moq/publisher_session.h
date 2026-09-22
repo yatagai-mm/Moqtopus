@@ -1,4 +1,3 @@
-// Public API
 #pragma once
 
 #include "moq/client_config.h"
@@ -9,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace moq {
 
@@ -20,15 +20,13 @@ struct PublishedTrack {
   TrackNamespace track_namespace;
   TrackName track_name;
   ObjectProperties track_properties;
-  uint8_t default_publisher_priority = 128;
-  uint8_t default_group_order = 1; // 0x1 ascending, 0x2 descending
 };
 
 struct PublishedObject {
   TrackNamespace track_namespace;
   TrackName track_name;
   GroupId group_id = 0;
-  std::optional<SubgroupId> subgroup_id; // subgroup 0 when absent
+  SubgroupId subgroup_id = 0;
   ObjectId object_id = 0;
   uint8_t publisher_priority = 128;
   ObjectProperties properties;
@@ -40,21 +38,20 @@ struct PublishedObject {
 };
 
 namespace detail {
-class PublisherSessionImpl;
+class Publisher;
 }
 
 // Client-side MOQT publisher: connects to a relay, accepts peer SUBSCRIBEs for
 // registered tracks and fans published objects out to established
 // subscriptions. All calls are thread-safe; publish() runs synchronously.
-class MoqPublisherSession {
+class Publisher {
 public:
-  ~MoqPublisherSession();
+  ~Publisher();
 
-  MoqPublisherSession(const MoqPublisherSession &) = delete;
-  MoqPublisherSession &operator=(const MoqPublisherSession &) = delete;
+  Publisher(const Publisher &) = delete;
+  Publisher &operator=(const Publisher &) = delete;
 
-  static std::future<std::unique_ptr<MoqPublisherSession>> connect(MsQuicClientConfig msquic_config,
-                                                                   PublisherConfig publisher_config = {});
+  static std::unique_ptr<Publisher> connect(MsQuicClientConfig msquic_config, PublisherConfig publisher_config = {});
 
   std::future<void> ready();
   SessionStateSnapshot state() const;
@@ -67,9 +64,9 @@ public:
   void close(SessionCloseErrorCode error = SessionCloseErrorCode::NoError);
 
 private:
-  explicit MoqPublisherSession(std::shared_ptr<detail::PublisherSessionImpl> impl);
+  explicit Publisher(std::shared_ptr<detail::Publisher> impl) : impl_(std::move(impl)) {}
 
-  std::shared_ptr<detail::PublisherSessionImpl> impl_;
+  std::shared_ptr<detail::Publisher> impl_;
 };
 
 } // namespace moq
