@@ -1,8 +1,17 @@
 #include "msquic_transport_adapter.h"
 
+#include <cstring>
+#include <memory>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
+#include <string>
 #include <utility>
+
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
+#include <netdb.h>
+#endif
 
 #include <msquichelper.h>
 
@@ -31,6 +40,37 @@ static void throw_if_failed(QUIC_STATUS status, const char *what) {
   if (QUIC_FAILED(status)) {
     throw std::runtime_error(std::string(what) + " failed: " + quic_status_string(status));
   }
+}
+
+static QUIC_ADDR resolve_remote_address(const std::string &host, uint16_t port) {
+  addrinfo hints{};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_DGRAM;
+  hints.ai_flags = AI_NUMERICSERV;
+
+  addrinfo *resolved = nullptr;
+  const std::string service = std::to_string(port);
+  const int result = getaddrinfo(host.c_str(), service.c_str(), &hints, &resolved);
+  if (result != 0) {
+#ifdef _WIN32
+    throw std::runtime_error("failed to resolve remote host " + host + ": getaddrinfo error " +
+                             std::to_string(result));
+#else
+    throw std::runtime_error("failed to resolve remote host " + host + ": " + gai_strerror(result));
+#endif
+  }
+  const std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> addresses(resolved, freeaddrinfo);
+
+  for (const addrinfo *address = addresses.get(); address; address = address->ai_next) {
+    if ((address->ai_family != AF_INET && address->ai_family != AF_INET6) ||
+        address->ai_addrlen > sizeof(QUIC_ADDR)) {
+      continue;
+    }
+    QUIC_ADDR remote{};
+    std::memcpy(&remote, address->ai_addr, address->ai_addrlen);
+    return remote;
+  }
+  throw std::runtime_error("remote host did not resolve to an IPv4 or IPv6 address: " + host);
 }
 
 MsQuicTransportAdapter::MsQuicTransportAdapter(MsQuicClientConfig config, Callbacks callbacks)
@@ -106,7 +146,13 @@ MsQuicTransportAdapter::~MsQuicTransportAdapter() {
 }
 
 void MsQuicTransportAdapter::start() {
-  throw_if_failed(api_->ConnectionStart(connection_, configuration_, QUIC_ADDRESS_FAMILY_UNSPEC, config_.host.c_str(),
+  const std::string &server_name = config_.server_name.empty() ? config_.host : config_.server_name;
+  if (!config_.server_name.empty()) {
+    const QUIC_ADDR remote = resolve_remote_address(config_.host, config_.port);
+    throw_if_failed(api_->SetParam(connection_, QUIC_PARAM_CONN_REMOTE_ADDRESS, sizeof(remote), &remote),
+                    "SetParam(QUIC_PARAM_CONN_REMOTE_ADDRESS)");
+  }
+  throw_if_failed(api_->ConnectionStart(connection_, configuration_, QUIC_ADDRESS_FAMILY_UNSPEC, server_name.c_str(),
                                         config_.port),
                   "ConnectionStart");
 }

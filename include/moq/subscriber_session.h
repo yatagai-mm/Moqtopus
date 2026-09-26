@@ -12,14 +12,20 @@ namespace moq {
 
 enum class UnknownAliasPolicy {
   Drop,
-  BufferDatagrams,
+  Buffer,
+  // Backward-compatible name from when only datagrams were buffered.
+  BufferDatagrams = Buffer,
   Error,
 };
 
 struct SubscriberConfig {
-  UnknownAliasPolicy unknown_alias_policy = UnknownAliasPolicy::BufferDatagrams;
+  UnknownAliasPolicy unknown_alias_policy = UnknownAliasPolicy::Buffer;
   size_t max_buffered_datagrams_per_alias = 16;
   size_t max_buffered_datagram_bytes = 256 * 1024;
+  // Draft-18 Section 11.4.2 permits briefly buffering a Subgroup stream
+  // until SUBSCRIBE_OK/PUBLISH establishes its Track Alias.
+  size_t max_pending_subgroup_streams = 64;
+  size_t max_buffered_subgroup_bytes_per_stream = 1024 * 1024;
 };
 
 class DataPlane;

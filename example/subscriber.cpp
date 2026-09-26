@@ -92,8 +92,8 @@ private:
 };
 
 void Usage(const char *argv0) {
-  spdlog::error("usage: {} <host> <port> <namespace[/field...]> <track-name> [path]", argv0);
-  spdlog::error("example: {} localhost 4433 camera/front video /", argv0);
+  spdlog::error("usage: {} <host> <port> <namespace[/field...]> <track-name> [path] [server-name]", argv0);
+  spdlog::error("example: {} localhost 4433 camera/front video / localhost", argv0);
 }
 
 int main(int argc, char **argv) {
@@ -103,7 +103,7 @@ int main(int argc, char **argv) {
     spdlog::set_level(spdlog::level::debug);
   }
 
-  if (argc < 5 || argc > 6) {
+  if (argc < 5 || argc > 7) {
     Usage(argv[0]);
     return 2;
   }
@@ -116,6 +116,7 @@ int main(int argc, char **argv) {
       return 2;
     }
     client_config.path = argc >= 6 ? argv[5] : "/";
+    client_config.server_name = argc >= 7 ? argv[6] : "";
 
     auto session = moq::Subscriber::connect(client_config);
     session->ready().get();

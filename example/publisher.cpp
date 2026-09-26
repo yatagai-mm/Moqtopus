@@ -17,8 +17,9 @@ std::atomic_bool interrupted{false};
 void HandleSignal(int) { interrupted.store(true); }
 
 void Usage(const char *argv0) {
-  spdlog::error("usage: {} <host> <port> <namespace[/field...]> <track-name> [path] [stream|datagram]", argv0);
-  spdlog::error("example: {} localhost 4433 camera/front video / stream", argv0);
+  spdlog::error(
+      "usage: {} <host> <port> <namespace[/field...]> <track-name> [path] [stream|datagram] [server-name]", argv0);
+  spdlog::error("example: {} localhost 4433 camera/front video / stream localhost", argv0);
 }
 
 int main(int argc, char **argv) {
@@ -28,7 +29,7 @@ int main(int argc, char **argv) {
     spdlog::set_level(spdlog::level::debug);
   }
 
-  if (argc < 5 || argc > 7) {
+  if (argc < 5 || argc > 8) {
     Usage(argv[0]);
     return 2;
   }
@@ -45,6 +46,7 @@ int main(int argc, char **argv) {
     }
     client_config.path = argc >= 6 ? argv[5] : "/";
     const bool use_datagrams = argc >= 7 && std::string(argv[6]) == "datagram";
+    client_config.server_name = argc >= 8 ? argv[7] : "";
 
     const moq::TrackNamespace track_namespace = ParseNamespace(argv[3]);
     const moq::TrackName track_name = argv[4];
