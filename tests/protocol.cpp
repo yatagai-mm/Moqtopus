@@ -87,11 +87,19 @@ void subscriber_tests() {
   auto handler = std::make_shared<Handler>();
   auto pending = session->subscribe({{"test"}, "track", {}}, handler);
   auto &request = *fake::connection->streams.back();
-  // A datagram can precede SUBSCRIBE_OK; it is replayed when the alias is installed.
+  // Data can precede SUBSCRIBE_OK. Datagrams and complete Subgroup streams are
+  // replayed when the response establishes the alias -> request mapping.
   fake::connection->callbacks.datagram_received(encode_object_datagram(7, 0, 0, 128, {}, {}, ByteBuffer{42}, false));
+  ByteBuffer early_data;
+  encode_subgroup_header(early_data, 7, 2, 0, 128);
+  encode_subgroup_object(early_data, 0, {}, {}, ByteBuffer{9});
+  auto &early_stream = fake::connection->peer_stream(true);
+  fragmented(early_stream, early_data, true);
+  assert(handler->ids.empty() && early_stream.shutdowns.empty());
   fragmented(request, encode_subscribe_ok(7, {}, {}));
   auto handle = pending.get();
-  assert(handle.track_alias == 7 && handler->ids == std::vector<ObjectId>{0});
+  assert(handle.track_alias == 7 && handler->ids == (std::vector<ObjectId>{0, 0}));
+  assert(handler->payloads == (std::vector<ByteBuffer>{{42}, {9}}));
   const auto state = session->subscription_state(handle.request_id);
   assert(state.phase == SubscriptionPhase::Established && state.request_id == handle.request_id &&
          state.track_alias == handle.track_alias);
@@ -101,7 +109,7 @@ void subscriber_tests() {
   encode_subgroup_object(data, 0, {}, {}, ByteBuffer{1, 2});
   encode_subgroup_object(data, 2, {}, {}, ByteBuffer{3, 4});
   fragmented(fake::connection->peer_stream(true), data, true);
-  assert(handler->ids == (std::vector<ObjectId>{0, 0, 3}));
+  assert(handler->ids == (std::vector<ObjectId>{0, 0, 0, 3}));
   assert(handler->payloads.back() == (ByteBuffer{3, 4}));
   auto update = session->request_update(handle.request_id, {});
   assert(session->subscription_state(handle.request_id).inflight_updates == 1);
@@ -119,7 +127,8 @@ void subscriber_tests() {
   } catch (const RequestRejected &) {
     threw = true;
   }
-  assert(threw && handler->done == 1 && session->subscription_state(handle.request_id).phase == SubscriptionPhase::Terminated);
+  assert(threw && handler->done == 1 &&
+         session->subscription_state(handle.request_id).phase == SubscriptionPhase::Terminated);
   assert(session->state().active_subscriptions == 0);
   auto pending2 = session->subscribe({{"test"}, "other", {}}, handler);
   fake::connection->streams.back()->receive({4, 0}, true);
@@ -192,6 +201,37 @@ void publisher_tests() {
   assert(fake::connection->close_code == SessionCloseErrorCode::InvalidRequestId);
 }
 void edge_tests() {
+  {
+    // A Subgroup carries no Request ID. With concurrent pending SUBSCRIBEs,
+    // each stream remains parked by alias until its own SUBSCRIBE_OK arrives.
+    auto session = Subscriber::connect({});
+    setup();
+    auto first_handler = std::make_shared<Handler>();
+    auto second_handler = std::make_shared<Handler>();
+    auto first_pending = session->subscribe({{"test"}, "first", {}}, first_handler);
+    auto &first_request = *fake::connection->streams.back();
+    auto second_pending = session->subscribe({{"test"}, "second", {}}, second_handler);
+    auto &second_request = *fake::connection->streams.back();
+
+    ByteBuffer second_data;
+    encode_subgroup_header(second_data, 8, 0, 0, 128);
+    encode_subgroup_object(second_data, 0, {}, {}, ByteBuffer{8});
+    fragmented(fake::connection->peer_stream(true), second_data, true);
+    ByteBuffer first_data;
+    encode_subgroup_header(first_data, 7, 0, 0, 128);
+    encode_subgroup_object(first_data, 0, {}, {}, ByteBuffer{7});
+    fragmented(fake::connection->peer_stream(true), first_data, true);
+    assert(first_handler->ids.empty() && second_handler->ids.empty());
+
+    first_request.receive(encode_subscribe_ok(7, {}, {}));
+    assert(first_pending.get().track_alias == 7);
+    assert(first_handler->payloads == (std::vector<ByteBuffer>{{7}}));
+    assert(second_handler->ids.empty());
+    second_request.receive(encode_subscribe_ok(8, {}, {}));
+    assert(second_pending.get().track_alias == 8);
+    assert(second_handler->payloads == (std::vector<ByteBuffer>{{8}}));
+    session->close();
+  }
   {
     auto session = Subscriber::connect({});
     auto ready = session->ready();

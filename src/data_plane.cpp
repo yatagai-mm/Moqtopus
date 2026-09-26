@@ -3,6 +3,7 @@
 #include "codec/codec_internal.h"
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -37,12 +38,15 @@ static Parse read_properties(Cursor &cursor, bool require_non_empty, BytesView &
 // route/flags are frozen; each subsequent receive is parsed in place over the
 // QUIC buffers and objects are delivered as views. Only bytes of an object that
 // straddles a receive boundary are copied (into stash_).
-class SubgroupReceiver final : public StreamSink {
+class SubgroupReceiver final : public StreamSink,
+                               public PendingSubgroupStream,
+                               public std::enable_shared_from_this<SubgroupReceiver> {
 public:
   SubgroupReceiver(DataPlane &plane, std::shared_ptr<StreamContext> stream, ByteBuffer prefix)
       : plane_(plane), stream_(std::move(stream)), stash_(std::move(prefix)) {}
 
   void on_receive(const BytesView *chunks, size_t count, bool fin) override {
+    const std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {
       return;
     }
@@ -52,6 +56,7 @@ public:
       if (!closed_ && cursor.remaining() != 0) {
         stash_.assign(cursor.bytes.data + cursor.offset, cursor.bytes.data + cursor.bytes.size);
       }
+      enforce_pending_buffer_limit();
       return;
     }
     for (size_t index = 0; index < count; ++index) {
@@ -61,10 +66,39 @@ public:
     run(cursor, fin);
     if (!closed_) {
       stash_.erase(stash_.begin(), stash_.begin() + static_cast<std::ptrdiff_t>(cursor.offset));
+      enforce_pending_buffer_limit();
+    } else {
+      stash_.clear();
     }
   }
 
-  void on_peer_send_aborted(uint64_t) override { closed_ = true; }
+  void on_peer_send_aborted(uint64_t) override {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (waiting_for_route_) {
+      plane_.discard_pending_subgroup(alias_, this);
+    }
+    closed_ = true;
+    waiting_for_route_ = false;
+    stash_.clear();
+  }
+
+  void establish(std::shared_ptr<ReceiveRoute> route) override {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (closed_ || !waiting_for_route_) {
+      return;
+    }
+    spdlog::debug("resuming early subgroup stream {} for alias={} request={} with {} buffered bytes", stream_->id(),
+                  alias_, route->request_id, stash_.size());
+    route_ = std::move(route);
+    waiting_for_route_ = false;
+    Cursor cursor{stash_};
+    run(cursor, fin_while_pending_);
+    if (closed_) {
+      stash_.clear();
+    } else {
+      stash_.erase(stash_.begin(), stash_.begin() + static_cast<std::ptrdiff_t>(cursor.offset));
+    }
+  }
 
 private:
   void run(Cursor &cursor, bool fin) {
@@ -81,6 +115,10 @@ private:
         }
         return;
       }
+    }
+    if (waiting_for_route_) {
+      fin_while_pending_ = fin_while_pending_ || fin;
+      return;
     }
     while (!closed_) {
       const size_t mark = cursor.offset;
@@ -136,18 +174,30 @@ private:
     alias_ = alias;
     properties_per_object_ = (type & 0x01) != 0;
     end_of_group_on_fin_ = (type & 0x08) != 0;
-    SPDLOG_TRACE("Subgroup stream {} header type={:#x} alias={} group={}", stream_->id(), type, alias_, group_id_);
-    route_ = plane_.find_route(alias_);
-    if (!route_) {
-      if (plane_.unknown_alias_policy() == UnknownAliasPolicy::Error) {
-        return fail("subgroup stream referenced unknown track alias " + std::to_string(alias_));
-      }
-      stream_->abort_receive(0);
-      closed_ = true;
-      return Parse::Done;
-    }
     if (default_priority) {
       publisher_priority_ = 128;
+    }
+    SPDLOG_TRACE("Subgroup stream {} header type={:#x} alias={} group={}", stream_->id(), type, alias_, group_id_);
+    if (plane_.unknown_alias_policy() == UnknownAliasPolicy::Error) {
+      route_ = plane_.find_route(alias_);
+      if (!route_) {
+        return fail("subgroup stream referenced unknown track alias " + std::to_string(alias_));
+      }
+    } else if (plane_.unknown_alias_policy() == UnknownAliasPolicy::Drop) {
+      route_ = plane_.find_route(alias_);
+      if (!route_) {
+        abandon();
+        return Parse::Done;
+      }
+    } else if (!plane_.find_or_park_subgroup(alias_, shared_from_this(), route_)) {
+      abandon();
+      return Parse::Done;
+    }
+    if (!route_) {
+      // A SUBGROUP_HEADER only carries the publisher-selected Track Alias.
+      // Keep the stream parked until SUBSCRIBE_OK establishes alias -> request.
+      waiting_for_route_ = true;
+      spdlog::debug("parking early subgroup stream {} for unknown track alias {}", stream_->id(), alias_);
     }
     header_done_ = true;
     return Parse::Done;
@@ -227,12 +277,33 @@ private:
     return Parse::Error;
   }
 
+  void enforce_pending_buffer_limit() {
+    if (waiting_for_route_ && stash_.size() > plane_.max_buffered_subgroup_bytes_per_stream()) {
+      spdlog::warn("abandoning early subgroup stream {} for alias={}: buffered bytes exceeded {}", stream_->id(),
+                   alias_, plane_.max_buffered_subgroup_bytes_per_stream());
+      abandon();
+    }
+  }
+
+  void abandon() {
+    if (waiting_for_route_) {
+      plane_.discard_pending_subgroup(alias_, this);
+    }
+    stream_->abort_receive(0);
+    closed_ = true;
+    waiting_for_route_ = false;
+    stash_.clear();
+  }
+
   DataPlane &plane_;
   std::shared_ptr<StreamContext> stream_;
+  std::mutex mutex_;
   ByteBuffer stash_;
   std::shared_ptr<ReceiveRoute> route_;
   bool header_done_ = false;
   bool closed_ = false;
+  bool waiting_for_route_ = false;
+  bool fin_while_pending_ = false;
   bool properties_per_object_ = false;
   bool end_of_group_on_fin_ = false;
   uint8_t subgroup_id_mode_ = 0;
@@ -247,10 +318,17 @@ DataPlane::DataPlane(SubscriberConfig config, ProtocolErrorCallback protocol_err
     : protocol_error(std::move(protocol_error)), track_error(std::move(track_error)), config_(std::move(config)) {}
 
 bool DataPlane::install_route(TrackAlias alias, std::shared_ptr<ReceiveRoute> route) {
+  std::vector<std::shared_ptr<PendingSubgroupStream>> pending_subgroups;
   {
     std::unique_lock<std::shared_mutex> lock(routes_mutex_);
-    if (!routes_by_alias_.emplace(alias, std::move(route)).second) {
+    if (!routes_by_alias_.emplace(alias, route).second) {
       return false;
+    }
+    const auto pending = pending_subgroups_by_alias_.find(alias);
+    if (pending != pending_subgroups_by_alias_.end()) {
+      pending_subgroups = std::move(pending->second);
+      pending_subgroup_stream_count_ -= pending_subgroups.size();
+      pending_subgroups_by_alias_.erase(pending);
     }
   }
   const auto buffered = unknown_datagrams_.find(alias);
@@ -261,6 +339,9 @@ bool DataPlane::install_route(TrackAlias alias, std::shared_ptr<ReceiveRoute> ro
       buffered_datagram_bytes_ -= datagram.size();
       deliver_datagram(BytesView{datagram}, false);
     }
+  }
+  for (const auto &subgroup : pending_subgroups) {
+    subgroup->establish(route);
   }
   return true;
 }
@@ -279,6 +360,38 @@ std::shared_ptr<ReceiveRoute> DataPlane::find_route(TrackAlias alias) const {
   std::shared_lock<std::shared_mutex> lock(routes_mutex_);
   const auto route = routes_by_alias_.find(alias);
   return route == routes_by_alias_.end() ? nullptr : route->second;
+}
+
+bool DataPlane::find_or_park_subgroup(TrackAlias alias, std::shared_ptr<PendingSubgroupStream> stream,
+                                      std::shared_ptr<ReceiveRoute> &route) {
+  std::unique_lock<std::shared_mutex> lock(routes_mutex_);
+  const auto established = routes_by_alias_.find(alias);
+  if (established != routes_by_alias_.end()) {
+    route = established->second;
+    return true;
+  }
+  if (pending_subgroup_stream_count_ >= config_.max_pending_subgroup_streams) {
+    return false;
+  }
+  pending_subgroups_by_alias_[alias].push_back(std::move(stream));
+  ++pending_subgroup_stream_count_;
+  return true;
+}
+
+void DataPlane::discard_pending_subgroup(TrackAlias alias, const PendingSubgroupStream *stream) {
+  std::unique_lock<std::shared_mutex> lock(routes_mutex_);
+  const auto found = pending_subgroups_by_alias_.find(alias);
+  if (found == pending_subgroups_by_alias_.end()) {
+    return;
+  }
+  auto &pending = found->second;
+  const auto new_end = std::remove_if(pending.begin(), pending.end(),
+                                      [stream](const auto &candidate) { return candidate.get() == stream; });
+  pending_subgroup_stream_count_ -= static_cast<size_t>(std::distance(new_end, pending.end()));
+  pending.erase(new_end, pending.end());
+  if (pending.empty()) {
+    pending_subgroups_by_alias_.erase(found);
+  }
 }
 
 void DataPlane::on_datagram(BytesView datagram) { deliver_datagram(datagram, true); }
@@ -369,7 +482,7 @@ void DataPlane::buffer_unknown_datagram(TrackAlias alias, BytesView bytes) {
   case UnknownAliasPolicy::Error:
     protocol_error("datagram referenced unknown track alias " + std::to_string(alias));
     return;
-  case UnknownAliasPolicy::BufferDatagrams:
+  case UnknownAliasPolicy::Buffer:
     break;
   }
   if (bytes.size > config_.max_buffered_datagram_bytes ||
