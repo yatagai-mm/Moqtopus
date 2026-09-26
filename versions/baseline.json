@@ -1,7 +1,7 @@
 {
   "default": {
     "moqtopus": {
-      "baseline": "0.0.4",
+      "baseline": "0.0.5",
       "port-version": 0
     }
   }
