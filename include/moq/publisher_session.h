@@ -29,7 +29,7 @@ struct PublishedObject {
   GroupId group_id = 0;
   SubgroupId subgroup_id = 0;
   ObjectId object_id = 0;
-  uint8_t publisher_priority = 128;
+  uint8_t publisher_priority = kDefaultPublisherPriority;
   ObjectProperties properties;
   ByteBuffer payload;
   std::optional<ObjectStatusCode> status; // Normal / EndOfGroup / EndOfTrack

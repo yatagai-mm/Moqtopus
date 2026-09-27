@@ -52,23 +52,23 @@ enum class ParameterEncoding {
 
 inline std::optional<ParameterEncoding> parameter_encoding(uint64_t type) {
   switch (type) {
-  case 0x02:
-  case 0x04:
-  case 0x06:
-  case 0x08:
-  case 0x0a:
-  case 0x32:
+  case kParameterObjectDeliveryTimeout:
+  case kParameterRendezvousTimeout:
+  case kParameterSubgroupDeliveryTimeout:
+  case kParameterExpires:
+  case kParameterFillTimeout:
+  case kParameterNewGroupRequest:
     return ParameterEncoding::Varint;
-  case 0x03:
-  case 0x21:
+  case kParameterAuthorizationToken:
+  case kParameterSubscriptionFilter:
     return ParameterEncoding::LengthPrefixed;
-  case 0x09:
+  case kParameterLargestObject:
     return ParameterEncoding::Location;
-  case 0x10:
-  case 0x20:
-  case 0x22:
+  case kParameterForward:
+  case kParameterSubscriberPriority:
+  case kParameterGroupOrder:
     return ParameterEncoding::Uint8;
-  case 0x34:
+  case kParameterTrackNamespacePrefix:
     return ParameterEncoding::TrackNamespace;
   default:
     return std::nullopt;

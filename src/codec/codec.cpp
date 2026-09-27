@@ -8,6 +8,25 @@
 
 namespace moq {
 
+namespace {
+
+// draft-ietf-moq-transport-18, Sections 11.3.1 and 11.4.2.
+constexpr uint64_t kObjectDatagramPropertiesBit = 0x01;
+constexpr uint64_t kObjectDatagramEndOfGroupBit = 0x02;
+constexpr uint64_t kObjectDatagramZeroObjectIdBit = 0x04;
+constexpr uint64_t kObjectDatagramStatusBit = 0x20;
+
+constexpr uint64_t kSubgroupHeaderPropertiesBit = 0x01;
+constexpr uint64_t kSubgroupHeaderIdModeMask = 0x06;
+constexpr uint64_t kSubgroupHeaderIdModeShift = 1;
+constexpr uint64_t kSubgroupHeaderIdModeZero = 0x00;
+constexpr uint64_t kSubgroupHeaderIdModeExplicit = 0x02;
+constexpr uint64_t kSubgroupHeaderIdModeReserved = 0x03;
+constexpr uint64_t kSubgroupHeaderTypeBit = 0x10;
+constexpr uint64_t kSubgroupHeaderTypeMaximum = 0x7f;
+
+} // namespace
+
 Parameter Parameter::uint8(uint64_t type, uint8_t value) { return Parameter{type, ByteBuffer{value}}; }
 
 Parameter Parameter::varint(uint64_t type, uint64_t value) {
@@ -116,10 +135,11 @@ void write_track_namespace(ByteBuffer &out, const TrackNamespace &name_space) {
 }
 
 bool is_subgroup_stream_type(uint64_t type) {
-  if ((type & 0x10) == 0 || type > 0x7f) {
+  if ((type & kSubgroupHeaderTypeBit) == 0 || type > kSubgroupHeaderTypeMaximum) {
     return false;
   }
-  return ((type & 0x06) >> 1) != 0x03;
+  return ((type & kSubgroupHeaderIdModeMask) >> kSubgroupHeaderIdModeShift) !=
+         kSubgroupHeaderIdModeReserved;
 }
 
 ByteBuffer encode_object_datagram(TrackAlias track_alias, GroupId group_id, ObjectId object_id, uint8_t priority,
@@ -127,15 +147,15 @@ ByteBuffer encode_object_datagram(TrackAlias track_alias, GroupId group_id, Obje
                                   BytesView payload, bool end_of_group) {
   uint64_t type = 0;
   if (!properties.empty()) {
-    type |= 0x01;
+    type |= kObjectDatagramPropertiesBit;
   }
   if (status) {
-    type |= 0x20;
+    type |= kObjectDatagramStatusBit;
   } else if (end_of_group) {
-    type |= 0x02;
+    type |= kObjectDatagramEndOfGroupBit;
   }
   if (object_id == 0) {
-    type |= 0x04;
+    type |= kObjectDatagramZeroObjectIdBit;
   }
 
   ByteBuffer out;
@@ -160,8 +180,10 @@ ByteBuffer encode_object_datagram(TrackAlias track_alias, GroupId group_id, Obje
 
 void encode_subgroup_header(ByteBuffer &out, TrackAlias track_alias, GroupId group_id, SubgroupId subgroup_id,
                             uint8_t priority) {
-  const uint64_t subgroup_id_mode = subgroup_id == 0 ? 0x0 : 0x2;
-  const uint64_t type = 0x10 | 0x01 | (subgroup_id_mode << 1);
+  const uint64_t subgroup_id_mode =
+      subgroup_id == 0 ? kSubgroupHeaderIdModeZero : kSubgroupHeaderIdModeExplicit;
+  const uint64_t type = kSubgroupHeaderTypeBit | kSubgroupHeaderPropertiesBit |
+                        (subgroup_id_mode << kSubgroupHeaderIdModeShift);
   write_varint(out, type);
   write_varint(out, track_alias);
   write_varint(out, group_id);

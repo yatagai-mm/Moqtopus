@@ -27,6 +27,14 @@ void fragmented(fake::Stream &stream, const ByteBuffer &bytes, bool fin = false)
 void setup() { fragmented(fake::connection->peer_stream(true), encode_setup("relay", "/")); }
 
 void codec_tests() {
+  for (const uint64_t type : {0x10, 0x15, 0x18, 0x1d, 0x30, 0x35, 0x38, 0x3d,
+                              0x50, 0x55, 0x58, 0x5d, 0x70, 0x75, 0x78, 0x7d}) {
+    assert(is_subgroup_stream_type(type));
+  }
+  for (const uint64_t type : {0x0f, 0x16, 0x1f, 0x2f, 0x36, 0x3f, 0x56, 0x5f,
+                              0x76, 0x7f, 0x80}) {
+    assert(!is_subgroup_stream_type(type));
+  }
   std::mt19937_64 random(18);
   for (unsigned i = 0; i < 10000; ++i) {
     uint64_t value = i < 64 ? (uint64_t{1} << i) - 1 : random();
@@ -89,9 +97,10 @@ void subscriber_tests() {
   auto &request = *fake::connection->streams.back();
   // Data can precede SUBSCRIBE_OK. Datagrams and complete Subgroup streams are
   // replayed when the response establishes the alias -> request mapping.
-  fake::connection->callbacks.datagram_received(encode_object_datagram(7, 0, 0, 128, {}, {}, ByteBuffer{42}, false));
+  fake::connection->callbacks.datagram_received(
+      encode_object_datagram(7, 0, 0, kDefaultPublisherPriority, {}, {}, ByteBuffer{42}, false));
   ByteBuffer early_data;
-  encode_subgroup_header(early_data, 7, 2, 0, 128);
+  encode_subgroup_header(early_data, 7, 2, 0, kDefaultPublisherPriority);
   encode_subgroup_object(early_data, 0, {}, {}, ByteBuffer{9});
   auto &early_stream = fake::connection->peer_stream(true);
   fragmented(early_stream, early_data, true);
@@ -105,7 +114,7 @@ void subscriber_tests() {
          state.track_alias == handle.track_alias);
   assert(session->state().active_subscriptions == 1);
   ByteBuffer data;
-  encode_subgroup_header(data, 7, 1, 0, 128);
+  encode_subgroup_header(data, 7, 1, 0, kDefaultPublisherPriority);
   encode_subgroup_object(data, 0, {}, {}, ByteBuffer{1, 2});
   encode_subgroup_object(data, 2, {}, {}, ByteBuffer{3, 4});
   fragmented(fake::connection->peer_stream(true), data, true);
@@ -177,7 +186,7 @@ void publisher_tests() {
   session->publish(object);
   auto &data = *fake::connection->streams.back();
   ByteBuffer expected;
-  encode_subgroup_header(expected, 0, 0, 0, 128);
+  encode_subgroup_header(expected, 0, 0, 0, kDefaultPublisherPriority);
   encode_subgroup_object(expected, 0, {}, {}, object.payload);
   assert(data.sent == expected);
   request.sent.clear();
@@ -214,11 +223,11 @@ void edge_tests() {
     auto &second_request = *fake::connection->streams.back();
 
     ByteBuffer second_data;
-    encode_subgroup_header(second_data, 8, 0, 0, 128);
+    encode_subgroup_header(second_data, 8, 0, 0, kDefaultPublisherPriority);
     encode_subgroup_object(second_data, 0, {}, {}, ByteBuffer{8});
     fragmented(fake::connection->peer_stream(true), second_data, true);
     ByteBuffer first_data;
-    encode_subgroup_header(first_data, 7, 0, 0, 128);
+    encode_subgroup_header(first_data, 7, 0, 0, kDefaultPublisherPriority);
     encode_subgroup_object(first_data, 0, {}, {}, ByteBuffer{7});
     fragmented(fake::connection->peer_stream(true), first_data, true);
     assert(first_handler->ids.empty() && second_handler->ids.empty());
@@ -274,7 +283,8 @@ void edge_tests() {
     };
     auto handler = std::make_shared<CancellingHandler>(*session);
     auto pending = session->subscribe({{"test"}, "track", {}}, handler);
-    fake::connection->callbacks.datagram_received(encode_object_datagram(7, 0, 0, 128, {}, {}, ByteBuffer{42}, false));
+    fake::connection->callbacks.datagram_received(
+        encode_object_datagram(7, 0, 0, kDefaultPublisherPriority, {}, {}, ByteBuffer{42}, false));
     fake::connection->streams.back()->receive(encode_subscribe_ok(7, {}, {}));
     assert(pending.wait_for(0ms) == std::future_status::ready);
     bool rejected = false;
@@ -327,7 +337,7 @@ void lifetime_tests() {
     fake::connection->streams.back()->receive(encode_subscribe_ok(7, {}, {}));
     auto update = session->request_update(pending.get().request_id, {});
     ByteBuffer data;
-    encode_subgroup_header(data, 7, 1, 0, 128);
+    encode_subgroup_header(data, 7, 1, 0, kDefaultPublisherPriority);
     encode_subgroup_object(data, 0, {}, {}, ByteBuffer{1, 2});
     data.pop_back();
     fake::connection->peer_stream(true).receive(data);

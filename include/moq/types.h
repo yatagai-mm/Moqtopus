@@ -19,6 +19,9 @@ using TrackNamespace = std::vector<std::string>;
 using TrackName = std::string;
 using ObjectProperties = ByteBuffer;
 
+// draft-ietf-moq-transport-18, Section 12.4.
+inline constexpr uint8_t kDefaultPublisherPriority = 128;
+
 // Non-owning view into transport-owned bytes. Views handed to callbacks are
 // valid only for the duration of the call; copy with to_owned() to retain.
 struct BytesView {
@@ -92,7 +95,7 @@ struct Object {
   GroupId group_id = 0;
   std::optional<SubgroupId> subgroup_id;
   ObjectId object_id = 0;
-  uint8_t publisher_priority = 128;
+  uint8_t publisher_priority = kDefaultPublisherPriority;
   std::optional<ObjectStatusCode> status;
   BytesView properties;
   BytesView payload;

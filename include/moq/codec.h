@@ -30,15 +30,20 @@ constexpr uint64_t kMessageFetch = 0x16;
 constexpr uint64_t kMessageSubscribeNamespace = 0x50;
 constexpr uint64_t kMessageSubscribeTracks = 0x51;
 
-// Message parameter identifiers used by the publisher
+// Message parameter identifiers (Section 15.7)
 constexpr uint64_t kParameterObjectDeliveryTimeout = 0x02;
+constexpr uint64_t kParameterAuthorizationToken = 0x03;
+constexpr uint64_t kParameterRendezvousTimeout = 0x04;
 constexpr uint64_t kParameterSubgroupDeliveryTimeout = 0x06;
+constexpr uint64_t kParameterExpires = 0x08;
 constexpr uint64_t kParameterLargestObject = 0x09;
+constexpr uint64_t kParameterFillTimeout = 0x0a;
 constexpr uint64_t kParameterForward = 0x10;
 constexpr uint64_t kParameterSubscriberPriority = 0x20;
 constexpr uint64_t kParameterSubscriptionFilter = 0x21;
 constexpr uint64_t kParameterGroupOrder = 0x22;
 constexpr uint64_t kParameterNewGroupRequest = 0x32;
+constexpr uint64_t kParameterTrackNamespacePrefix = 0x34;
 
 // Subscription filter types (Section 5.1.2)
 constexpr uint64_t kFilterNextGroupStart = 0x1;

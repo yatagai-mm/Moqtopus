@@ -12,12 +12,33 @@
 
 namespace moq {
 
-constexpr uint64_t kNormalStatus = 0x0;
-constexpr uint64_t kEndOfGroupStatus = 0x3;
-constexpr uint64_t kEndOfTrackStatus = 0x4;
+namespace {
+
+// draft-ietf-moq-transport-18, Sections 11.3.1 and 11.4.2.
+constexpr uint64_t kObjectDatagramPayloadTypeMaximum = 0x0f;
+constexpr uint64_t kObjectDatagramStatusTypeMinimum = 0x20;
+constexpr uint64_t kObjectDatagramStatusTypeMaximum = 0x2f;
+constexpr uint64_t kObjectDatagramPropertiesBit = 0x01;
+constexpr uint64_t kObjectDatagramEndOfGroupBit = 0x02;
+constexpr uint64_t kObjectDatagramZeroObjectIdBit = 0x04;
+constexpr uint64_t kObjectDatagramDefaultPriorityBit = 0x08;
+constexpr uint64_t kObjectDatagramStatusBit = 0x20;
+
+constexpr uint64_t kSubgroupHeaderPropertiesBit = 0x01;
+constexpr uint64_t kSubgroupHeaderIdModeMask = 0x06;
+constexpr uint64_t kSubgroupHeaderIdModeShift = 1;
+constexpr uint8_t kSubgroupHeaderIdModeZero = 0x00;
+constexpr uint8_t kSubgroupHeaderIdModeFirstObject = 0x01;
+constexpr uint8_t kSubgroupHeaderIdModeExplicit = 0x02;
+constexpr uint64_t kSubgroupHeaderEndOfGroupBit = 0x08;
+constexpr uint64_t kSubgroupHeaderDefaultPriorityBit = 0x20;
+
+constexpr uint64_t kMaximumObjectPropertiesLength = 65535;
+
+} // namespace
 
 static bool is_valid_object_status(uint64_t status) {
-  return status == kNormalStatus || status == kEndOfGroupStatus || status == kEndOfTrackStatus;
+  return status == kObjectStatusNormal || status == kObjectStatusEndOfGroup || status == kObjectStatusEndOfTrack;
 }
 
 using Parse = DecodeStatus;
@@ -28,7 +49,7 @@ static Parse read_properties(Cursor &cursor, bool require_non_empty, BytesView &
   if (!cursor.read_varint(length)) {
     return Parse::NeedMoreData;
   }
-  if ((require_non_empty && length == 0) || length > 65535) {
+  if ((require_non_empty && length == 0) || length > kMaximumObjectPropertiesLength) {
     return Parse::Error;
   }
   return cursor.read_view(length, properties) ? Parse::Done : Parse::NeedMoreData;
@@ -155,27 +176,28 @@ private:
       return Parse::NeedMoreData;
     }
 
-    subgroup_id_mode_ = static_cast<uint8_t>((type & 0x06) >> 1);
-    if (subgroup_id_mode_ == 0x02) {
+    subgroup_id_mode_ =
+        static_cast<uint8_t>((type & kSubgroupHeaderIdModeMask) >> kSubgroupHeaderIdModeShift);
+    if (subgroup_id_mode_ == kSubgroupHeaderIdModeExplicit) {
       uint64_t subgroup = 0;
       if (!cursor.read_varint(subgroup)) {
         return Parse::NeedMoreData;
       }
       subgroup_id_ = subgroup;
-    } else if (subgroup_id_mode_ == 0x00) {
+    } else if (subgroup_id_mode_ == kSubgroupHeaderIdModeZero) {
       subgroup_id_ = 0;
     }
 
-    const bool default_priority = (type & 0x20) != 0;
+    const bool default_priority = (type & kSubgroupHeaderDefaultPriorityBit) != 0;
     if (!default_priority && !cursor.read_byte(publisher_priority_)) {
       return Parse::NeedMoreData;
     }
 
     alias_ = alias;
-    properties_per_object_ = (type & 0x01) != 0;
-    end_of_group_on_fin_ = (type & 0x08) != 0;
+    properties_per_object_ = (type & kSubgroupHeaderPropertiesBit) != 0;
+    end_of_group_on_fin_ = (type & kSubgroupHeaderEndOfGroupBit) != 0;
     if (default_priority) {
-      publisher_priority_ = 128;
+      publisher_priority_ = kDefaultPublisherPriority;
     }
     SPDLOG_TRACE("Subgroup stream {} header type={:#x} alias={} group={}", stream_->id(), type, alias_, group_id_);
     if (plane_.unknown_alias_policy() == UnknownAliasPolicy::Error) {
@@ -233,7 +255,7 @@ private:
       if (!cursor.read_varint(status_code)) {
         return Parse::NeedMoreData;
       }
-      if (!is_valid_object_status(status_code) || (status_code != kNormalStatus && !properties.empty())) {
+      if (!is_valid_object_status(status_code) || (status_code != kObjectStatusNormal && !properties.empty())) {
         return fail("invalid subgroup object status " + std::to_string(status_code) + " on stream " +
                     std::to_string(stream_->id()));
       }
@@ -250,7 +272,7 @@ private:
       }
       object_id = *last_object_id_ + object_delta + 1;
     }
-    if (subgroup_id_mode_ == 0x01 && !subgroup_id_) {
+    if (subgroup_id_mode_ == kSubgroupHeaderIdModeFirstObject && !subgroup_id_) {
       subgroup_id_ = object_id;
     }
 
@@ -306,11 +328,11 @@ private:
   bool fin_while_pending_ = false;
   bool properties_per_object_ = false;
   bool end_of_group_on_fin_ = false;
-  uint8_t subgroup_id_mode_ = 0;
+  uint8_t subgroup_id_mode_ = kSubgroupHeaderIdModeZero;
   TrackAlias alias_ = 0;
   GroupId group_id_ = 0;
   std::optional<SubgroupId> subgroup_id_;
-  uint8_t publisher_priority_ = 128;
+  uint8_t publisher_priority_ = kDefaultPublisherPriority;
   std::optional<ObjectId> last_object_id_;
 };
 
@@ -415,7 +437,12 @@ void DataPlane::deliver_datagram(BytesView bytes, bool allow_buffer) {
     }
     return;
   }
-  if ((type > 0x0f && (type < 0x20 || type > 0x2f)) || ((type & 0x20) != 0 && (type & 0x02) != 0)) {
+  const bool valid_type_range = type <= kObjectDatagramPayloadTypeMaximum ||
+                                (type >= kObjectDatagramStatusTypeMinimum &&
+                                 type <= kObjectDatagramStatusTypeMaximum);
+  const bool status_with_end_of_group =
+      (type & kObjectDatagramStatusBit) != 0 && (type & kObjectDatagramEndOfGroupBit) != 0;
+  if (!valid_type_range || status_with_end_of_group) {
     return protocol_error("invalid object datagram type");
   }
 
@@ -425,7 +452,7 @@ void DataPlane::deliver_datagram(BytesView bytes, bool allow_buffer) {
     return protocol_error("truncated object datagram header");
   }
   uint64_t object_id = 0;
-  if ((type & 0x04) == 0 && !cursor.read_varint(object_id)) {
+  if ((type & kObjectDatagramZeroObjectIdBit) == 0 && !cursor.read_varint(object_id)) {
     return protocol_error("truncated object datagram Object ID");
   }
 
@@ -437,21 +464,21 @@ void DataPlane::deliver_datagram(BytesView bytes, bool allow_buffer) {
     return;
   }
 
-  uint8_t publisher_priority = 128;
-  if ((type & 0x08) == 0 && !cursor.read_byte(publisher_priority)) {
+  uint8_t publisher_priority = kDefaultPublisherPriority;
+  if ((type & kObjectDatagramDefaultPriorityBit) == 0 && !cursor.read_byte(publisher_priority)) {
     return protocol_error("truncated object datagram priority");
   }
   BytesView properties;
-  if ((type & 0x01) != 0 && read_properties(cursor, true, properties) != Parse::Done) {
+  if ((type & kObjectDatagramPropertiesBit) != 0 && read_properties(cursor, true, properties) != Parse::Done) {
     return protocol_error("invalid object datagram properties");
   }
 
   std::optional<ObjectStatusCode> object_status;
   BytesView payload;
-  if ((type & 0x20) != 0) {
+  if ((type & kObjectDatagramStatusBit) != 0) {
     uint64_t status_code = 0;
     if (!cursor.read_varint(status_code) || !is_valid_object_status(status_code) ||
-        (status_code != kNormalStatus && !properties.empty()) || cursor.remaining() != 0) {
+        (status_code != kObjectStatusNormal && !properties.empty()) || cursor.remaining() != 0) {
       return protocol_error("invalid object datagram status");
     }
     object_status = status_code;
@@ -469,7 +496,7 @@ void DataPlane::deliver_datagram(BytesView bytes, bool allow_buffer) {
   object.properties = properties;
   object.payload = payload;
   object.delivery_kind = DeliveryKind::Datagram;
-  if ((type & 0x02) != 0) {
+  if ((type & kObjectDatagramEndOfGroupBit) != 0) {
     route->final_object_in_group[group] = object_id;
   }
   deliver(*route, object);
@@ -510,10 +537,10 @@ void DataPlane::deliver(ReceiveRoute &route, const Object &object) {
                                        object.object_id > route.final_object_in_track->object))) {
     return track_error(route.request_id, "object followed final object in track");
   }
-  if (object.status && *object.status == kEndOfGroupStatus) {
+  if (object.status && *object.status == kObjectStatusEndOfGroup) {
     route.final_object_in_group[object.group_id] = object.object_id;
   }
-  if (object.status && *object.status == kEndOfTrackStatus) {
+  if (object.status && *object.status == kObjectStatusEndOfTrack) {
     route.final_object_in_track = Location{object.group_id, object.object_id};
   }
   route.handler->on_object(object);
