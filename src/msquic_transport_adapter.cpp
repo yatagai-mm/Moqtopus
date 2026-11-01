@@ -53,8 +53,7 @@ static QUIC_ADDR resolve_remote_address(const std::string &host, uint16_t port) 
   const int result = getaddrinfo(host.c_str(), service.c_str(), &hints, &resolved);
   if (result != 0) {
 #ifdef _WIN32
-    throw std::runtime_error("failed to resolve remote host " + host + ": getaddrinfo error " +
-                             std::to_string(result));
+    throw std::runtime_error("failed to resolve remote host " + host + ": getaddrinfo error " + std::to_string(result));
 #else
     throw std::runtime_error("failed to resolve remote host " + host + ": " + gai_strerror(result));
 #endif
@@ -62,8 +61,7 @@ static QUIC_ADDR resolve_remote_address(const std::string &host, uint16_t port) 
   const std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> addresses(resolved, freeaddrinfo);
 
   for (const addrinfo *address = addresses.get(); address; address = address->ai_next) {
-    if ((address->ai_family != AF_INET && address->ai_family != AF_INET6) ||
-        address->ai_addrlen > sizeof(QUIC_ADDR)) {
+    if ((address->ai_family != AF_INET && address->ai_family != AF_INET6) || address->ai_addrlen > sizeof(QUIC_ADDR)) {
       continue;
     }
     QUIC_ADDR remote{};
@@ -91,14 +89,25 @@ MsQuicTransportAdapter::MsQuicTransportAdapter(MsQuicClientConfig config, Callba
   settings.IsSet.IdleTimeoutMs = TRUE;
   settings.PeerBidiStreamCount = 128;
   settings.IsSet.PeerBidiStreamCount = TRUE;
-  settings.PeerUnidiStreamCount = 1024;
+  settings.PeerUnidiStreamCount = config_.peer_unidirectional_stream_count;
   settings.IsSet.PeerUnidiStreamCount = TRUE;
+  if (config_.connection_receive_window) {
+    settings.ConnFlowControlWindow = *config_.connection_receive_window;
+    settings.IsSet.ConnFlowControlWindow = TRUE;
+  }
   settings.DatagramReceiveEnabled = TRUE;
   settings.IsSet.DatagramReceiveEnabled = TRUE;
 
   throw_if_failed(
       api_->ConfigurationOpen(registration_, &alpn, 1, &settings, sizeof(settings), nullptr, &configuration_),
       "ConfigurationOpen");
+
+  QUIC_SETTINGS effective{};
+  uint32_t effective_size = sizeof(effective);
+  throw_if_failed(api_->GetParam(configuration_, QUIC_PARAM_CONFIGURATION_SETTINGS, &effective_size, &effective),
+                  "Get effective QUIC settings");
+  spdlog::info("CLUSTER_LIMITS unidi={} bidi={} stream={} connection={}", effective.PeerUnidiStreamCount,
+               effective.PeerBidiStreamCount, effective.StreamRecvWindowUnidiDefault, effective.ConnFlowControlWindow);
 
   QUIC_CREDENTIAL_CONFIG credential{};
   credential.Type = QUIC_CREDENTIAL_TYPE_NONE;
@@ -152,9 +161,9 @@ void MsQuicTransportAdapter::start() {
     throw_if_failed(api_->SetParam(connection_, QUIC_PARAM_CONN_REMOTE_ADDRESS, sizeof(remote), &remote),
                     "SetParam(QUIC_PARAM_CONN_REMOTE_ADDRESS)");
   }
-  throw_if_failed(api_->ConnectionStart(connection_, configuration_, QUIC_ADDRESS_FAMILY_UNSPEC, server_name.c_str(),
-                                        config_.port),
-                  "ConnectionStart");
+  throw_if_failed(
+      api_->ConnectionStart(connection_, configuration_, QUIC_ADDRESS_FAMILY_UNSPEC, server_name.c_str(), config_.port),
+      "ConnectionStart");
 }
 
 std::shared_ptr<StreamContext> MsQuicTransportAdapter::open_stream(bool unidirectional) {
@@ -216,7 +225,7 @@ QUIC_STATUS QUIC_API MsQuicTransportAdapter::connection_callback(HQUIC, void *co
         std::shared_ptr<StreamContext>(new StreamContext(*self, event->PEER_STREAM_STARTED.Stream, unidirectional));
     stream->id_ = GetStreamID(self->api_, event->PEER_STREAM_STARTED.Stream);
     self->api_->SetCallbackHandler(event->PEER_STREAM_STARTED.Stream,
-                                  reinterpret_cast<void *>(StreamContext::stream_callback), stream.get());
+                                   reinterpret_cast<void *>(StreamContext::stream_callback), stream.get());
     {
       std::lock_guard<std::mutex> lock(self->streams_mutex_);
       self->streams_.emplace(stream.get(), stream);

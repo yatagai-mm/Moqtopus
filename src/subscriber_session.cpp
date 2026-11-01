@@ -208,6 +208,7 @@ void Subscriber::stop_subscription(RequestId request_id) {
 void Subscriber::handle_data_stream(uint64_t type, const std::shared_ptr<StreamContext> &stream, ByteBuffer prefix,
                                     bool fin) {
   if (type == kFetchStreamType)
+    // TODO: implement FETCH handler
     return stream->abort_receive(0);
   data_plane_->start_subgroup_stream(stream, std::move(prefix), fin);
 }

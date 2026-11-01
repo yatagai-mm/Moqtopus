@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace moq {
@@ -19,6 +20,9 @@ struct MsQuicClientConfig {
   std::string path = "/";
   bool disable_certificate_validation = true;
   std::chrono::milliseconds idle_timeout{30000};
+  uint16_t peer_unidirectional_stream_count = 1024;
+  // Optional per-connection receive window size. Inherit MsQuic's default if not set.
+  std::optional<uint32_t> connection_receive_window;
 };
 
 } // namespace moq
