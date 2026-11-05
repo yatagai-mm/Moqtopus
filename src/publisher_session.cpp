@@ -405,7 +405,7 @@ void Publisher::accept_subscribe(const ByteBuffer &payload, const std::shared_pt
   if (const auto largest = track->largest) {
     parameters.push_back(Parameter::location(kParameterLargestObject, *largest));
   }
-  if (!stream->send(encode_subscribe_ok(track_alias, std::move(parameters), track->track.track_properties))) {
+  if (!stream->send(encode_subscribe_ok(track_alias, std::move(parameters), track->encoded_track_properties))) {
     begin_close(SessionCloseErrorCode::InternalError, "StreamSend failed for SUBSCRIBE_OK");
     return;
   }

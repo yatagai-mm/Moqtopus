@@ -20,7 +20,7 @@ struct PublisherConfig {
 struct PublishedTrack {
   TrackNamespace track_namespace;
   TrackName track_name;
-  ObjectProperties track_properties;
+  TrackProperties track_properties;
 };
 
 struct PublishedObject {

@@ -43,6 +43,28 @@ void register_track(PublishedTrack track);
 Registers a [PublishedTrack][published-track] and announces its namespace when the session is ready, allowing incoming subscriptions to the track.
 Duplicate registrations and namespaces whose first field is `"."` are ignored with a warning; this call does not wait for the peer to acknowledge the announcement.
 
+Track properties could be set:
+```cpp
+moq::PublishedTrack track;
+track.track_namespace = {"example"};
+track.track_name = "video";
+track.track_properties.object_delivery_timeout = 100; // milliseconds
+track.track_properties.max_cache_duration = 1000;
+track.track_properties.default_publisher_group_order = moq::GroupOrder::Descending;
+publisher->register_track(std::move(track));
+```
+
+Set properties through `PublishedTrack::track_properties`. For immutable values,
+use `track_properties.immutable_properties.emplace()` and set fields on the
+resulting `TrackPropertyValues`. Moqtopus retains the typed values and encodes
+them internally. Property semantics are defined in [draft-18 Section 12](https://www.ietf.org/archive/id/draft-ietf-moq-transport-18.html#section-12).
+
+Invalid group-order values or duplicate mutable/immutable properties throw
+`std::invalid_argument` before the track is registered. This API supplies
+metadata; local delivery-timeout enforcement, priority scheduling, and handling
+of dynamic group requests are not yet implemented. Subscriber-side decoded
+properties remain raw bytes.
+
 ### `unregister_track`
 
 ```cpp
@@ -97,13 +119,13 @@ The `std::unique_ptr` returned by `connect()` calls this automatically when dest
 | --- | --- |
 | [MsQuicClientConfig][client-config] | Set `host` and `port`. Defaults are `path = "/"`, an idle timeout of 30 seconds, and `disable_certificate_validation = true`; an empty `authority` uses `host:port`. The ALPN is fixed to `moqt-18`. |
 | [PublisherConfig][publisher-config] | `max_subscriptions` limits concurrent accepted subscriptions and defaults to 128. |
-| [PublishedTrack][published-track] | Set `track_namespace` and `track_name`; `track_properties` optionally carries encoded track properties. |
+| [PublishedTrack][published-track] | Set `track_namespace` and `track_name`; `track_properties` is a typed `TrackProperties` value; Moqtopus encodes it internally. |
 | [PublishedObject][published-object] | Set the track identity, group/object IDs, and payload. Defaults include subgroup ID 0, priority 128, and Subgroup stream delivery. |
 | [DeliveryKind][delivery-kind] | Choose `SubgroupStream` or `Datagram`. `FetchStream` exists in the shared enum but publishing with it is unsupported and the object is dropped. |
 
 For Subgroup streams, `end_of_subgroup` finishes the stream after the object. `end_of_group` also signals group completion; for Datagrams it marks the last object in the group. Object IDs must increase within an open Subgroup stream; an out-of-order ID causes that stream to be reset and replaced.
 
-Leave `status` unset for ordinary payload data. The [object status constants][object-status] are protocol values; see [MoQT draft-18, Section 11.2.1.1][draft-object-status] for details. Properties are encoded bytes rather than a key/value container; their wire format is described in [Section 2.5][draft-properties].
+Leave `status` unset for ordinary payload data. The [object status constants][object-status] are protocol values; see [MoQT draft-18, Section 11.2.1.1][draft-object-status] for details. Object properties remain encoded bytes; their wire format is described in [Section 2.5][draft-properties].
 
 Calling `publish()` before readiness, for an unregistered track, or with an invalid status/delivery combination drops the object with a warning. The method has no delivery-result return value, and a Datagram rejected by the transport is also dropped.
 

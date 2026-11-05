@@ -37,6 +37,7 @@ public:
     PublishedTrack track;
     std::optional<Location> largest;
     std::unordered_set<RequestId> subscriptions;
+    ByteBuffer encoded_track_properties;
   };
 
   bool register_track(PublishedTrack track);

@@ -19,6 +19,25 @@ using TrackNamespace = std::vector<std::string>;
 using TrackName = std::string;
 using ObjectProperties = ByteBuffer;
 
+enum class GroupOrder : uint8_t { Ascending = 1, Descending = 2 };
+
+// draft-18 Track Properties. Unset fields are omitted from the wire.
+// explicit zero/false values are preserved. Durations are in milliseconds.
+struct TrackPropertyValues {
+  std::optional<uint64_t> object_delivery_timeout;
+  std::optional<uint64_t> max_cache_duration;
+  std::optional<uint64_t> subgroup_delivery_timeout;
+  std::optional<uint8_t> default_publisher_priority;
+  std::optional<GroupOrder> default_publisher_group_order;
+  std::optional<bool> dynamic_groups;
+};
+
+struct TrackProperties : TrackPropertyValues {
+  // A property must occur in only one of the two lists. A separate value type
+  // prevents nested Immutable Properties and keeps registration value-owned.
+  std::optional<TrackPropertyValues> immutable_properties;
+};
+
 // draft-ietf-moq-transport-18, Section 12.4.
 inline constexpr uint8_t kDefaultPublisherPriority = 128;
 

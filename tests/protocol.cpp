@@ -169,6 +169,84 @@ void subscriber_tests() {
   session->close();
 }
 
+void track_properties_tests() {
+  assert(encode_track_properties({}).empty());
+  TrackProperties properties;
+  properties.object_delivery_timeout = 10;
+  properties.max_cache_duration = 20;
+  properties.subgroup_delivery_timeout = 30;
+  properties.default_publisher_priority = 7;
+  properties.default_publisher_group_order = GroupOrder::Descending;
+  properties.dynamic_groups = true;
+  // Independent wire fixture: delta types, with even types carrying varints.
+  const ByteBuffer expected{2, 10, 2, 20, 2, 30, 8, 7, 20, 2, 14, 1};
+  assert(encode_track_properties(properties) == expected);
+
+  TrackProperties zeros;
+  zeros.object_delivery_timeout = 0;
+  zeros.dynamic_groups = false;
+  assert(encode_track_properties(zeros) == (ByteBuffer{2, 0, 46, 0}));
+  TrackProperties nested;
+  nested.object_delivery_timeout = 10;
+  nested.default_publisher_priority = 7;
+  nested.immutable_properties.emplace();
+  nested.immutable_properties->max_cache_duration = 20;
+  nested.immutable_properties->dynamic_groups = false;
+  assert(encode_track_properties(nested) == (ByteBuffer{2, 10, 9, 4, 4, 20, 44, 0, 3, 7}));
+  TrackProperties empty_container;
+  empty_container.immutable_properties.emplace();
+  assert(encode_track_properties(empty_container) == (ByteBuffer{11, 0}));
+
+  TrackProperties maximum;
+  maximum.object_delivery_timeout = UINT64_MAX;
+  maximum.default_publisher_priority = 255;
+  const auto encoded_max = encode_track_properties(maximum);
+  const auto timeout = read_varint(encoded_max, 1);
+  assert(timeout.status == DecodeStatus::Done && timeout.value == UINT64_MAX);
+  const auto priority = read_varint(encoded_max, 1 + timeout.bytes + 1);
+  assert(priority.status == DecodeStatus::Done && priority.value == 255);
+
+  const auto invalid = [](const TrackProperties &value) {
+    bool threw = false;
+    try {
+      (void)encode_track_properties(value);
+    } catch (const std::invalid_argument &) {
+      threw = true;
+    }
+    assert(threw);
+  };
+  nested.dynamic_groups = false; // explicit false still counts as a duplicate
+  invalid(nested);
+  TrackProperties bad_order;
+  bad_order.default_publisher_group_order = static_cast<GroupOrder>(0);
+  invalid(bad_order);
+  bad_order.default_publisher_group_order.reset();
+  bad_order.immutable_properties.emplace();
+  bad_order.immutable_properties->default_publisher_group_order = static_cast<GroupOrder>(3);
+  invalid(bad_order);
+
+  auto session = Publisher::connect({});
+  setup();
+  bool threw = false;
+  try {
+    session->register_track({{"test"}, "typed", bad_order});
+  } catch (const std::invalid_argument &) {
+    threw = true;
+  }
+  assert(threw);
+  // Failed validation did not register the track. The later valid registration
+  // snapshots the values, independent of subsequent app-side mutations.
+  session->register_track({{"test"}, "typed", properties});
+  properties.object_delivery_timeout = 99;
+  auto &request = fake::connection->peer_stream(false);
+  request.receive(encode_subscribe(1, {{"test"}, "typed", {}}));
+  const auto message = read_control_message(request.sent);
+  assert(message.message.type == kMessageSubscribeOk);
+  std::string error;
+  const auto ok = decode_subscribe_ok(message.message.payload, error);
+  assert(ok && ok->track_properties == expected);
+}
+
 void publisher_tests() {
   auto session = Publisher::connect({});
   session->register_track({{"test"}, "track", {}});
@@ -370,6 +448,7 @@ void lifetime_tests() {
 int main() {
   codec_tests();
   subscriber_tests();
+  track_properties_tests();
   publisher_tests();
   edge_tests();
   lifetime_tests();

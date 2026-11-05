@@ -27,7 +27,11 @@ SendDataPlane::SendDataPlane(Callbacks callbacks) : callbacks_(std::move(callbac
 
 bool SendDataPlane::register_track(PublishedTrack track) {
   const TrackKey key{track.track_namespace, track.track_name};
-  return tracks_.emplace(key, TrackEntry{std::move(track), std::nullopt, {}}).second;
+  if (tracks_.find(key) != tracks_.end()) {
+    return false;
+  }
+  auto encoded = encode_track_properties(track.track_properties);
+  return tracks_.emplace(key, TrackEntry{std::move(track), std::nullopt, {}, std::move(encoded)}).second;
 }
 
 bool SendDataPlane::unregister_track(const TrackNamespace &track_namespace, const TrackName &track_name) {

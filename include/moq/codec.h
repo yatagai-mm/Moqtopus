@@ -139,6 +139,8 @@ std::optional<RequestOk> decode_request_ok(const ByteBuffer &payload, std::strin
 std::optional<RequestError> decode_request_error(const ByteBuffer &payload, std::string &error);
 std::optional<PublishDone> decode_publish_done(const ByteBuffer &payload, std::string &error);
 
+ByteBuffer encode_track_properties(const TrackProperties &properties);
+
 // Publisher-side control message codecs
 std::optional<Subscribe> decode_subscribe(const ByteBuffer &payload, std::string &error);
 std::optional<RequestUpdateMessage> decode_request_update(const ByteBuffer &payload, std::string &error);

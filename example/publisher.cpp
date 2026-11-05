@@ -17,8 +17,8 @@ std::atomic_bool interrupted{false};
 void HandleSignal(int) { interrupted.store(true); }
 
 void Usage(const char *argv0) {
-  spdlog::error(
-      "usage: {} <host> <port> <namespace[/field...]> <track-name> [path] [stream|datagram] [server-name]", argv0);
+  spdlog::error("usage: {} <host> <port> <namespace[/field...]> <track-name> [path] [stream|datagram] [server-name]",
+                argv0);
   spdlog::error("example: {} localhost 4433 camera/front video / stream localhost", argv0);
 }
 
@@ -59,6 +59,10 @@ int main(int argc, char **argv) {
     moq::PublishedTrack track;
     track.track_namespace = track_namespace;
     track.track_name = track_name;
+    track.track_properties.object_delivery_timeout = 10000;  // 10 seconds
+    track.track_properties.subgroup_delivery_timeout = 5000; // 5 seconds
+    track.track_properties.max_cache_duration = 60000;       // 60 seconds
+    track.track_properties.default_publisher_priority = moq::kDefaultPublisherPriority;
     session->register_track(track);
 
     // One group per 30 objects, one object every 100 ms, until interrupted.
