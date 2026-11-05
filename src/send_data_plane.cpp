@@ -247,8 +247,7 @@ void SendDataPlane::send_on_subgroup_stream(SubscriptionSend &subscription, cons
     }
     ++subscription.stream_count;
     open_it = subscription.streams.emplace(key, OpenSubgroupStream{std::move(stream), std::nullopt}).first;
-    encode_subgroup_header(bytes, subscription.track_alias, object.group_id, subgroup_id,
-                                  object.publisher_priority);
+    encode_subgroup_header(bytes, subscription.track_alias, object.group_id, subgroup_id, object.publisher_priority);
   }
   OpenSubgroupStream &open = open_it->second;
 
@@ -287,9 +286,9 @@ void SendDataPlane::send_datagram_object(const SubscriptionSend &subscription, c
   if (status && *status != kObjectStatusNormal && !properties.empty()) {
     properties = BytesView{};
   }
-  ByteBuffer bytes = encode_object_datagram(subscription.track_alias, object.group_id, object.object_id,
-                                                   object.publisher_priority, properties, status,
-                                                   BytesView{object.payload}, object.end_of_group);
+  ByteBuffer bytes =
+      encode_object_datagram(subscription.track_alias, object.group_id, object.object_id, object.publisher_priority,
+                             properties, status, BytesView{object.payload}, object.end_of_group);
   if (!callbacks_.send_datagram(std::move(bytes))) {
     // Oversized or unsupported datagrams are dropped without notification (Section 11.3).
     SPDLOG_TRACE("datagram for request {} dropped", subscription.request_id);
