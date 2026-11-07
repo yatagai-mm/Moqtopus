@@ -4,6 +4,7 @@
 #include "moq/types.h"
 
 #include <exception>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -68,6 +69,12 @@ private:
   void handle_peer_setup();
   void maybe_ready();
   void fail_ready_waiters(const std::string &reason);
+  // per-stream works retained until both SETUP messages have been exchanged.
+  // The argument selects replay (true) or discard on shutdown (false).
+  // pending_bytes_ in PeerStreamGate contains the bytes, and pending_setup_
+  // contains the callbacks to deliver them.
+  std::vector<std::function<void(bool)>> pending_setup_;
+  void discard_pending_setup();
   MsQuicClientConfig config_;
   RequestId next_request_id_ = 0;
   std::vector<std::promise<void>> ready_waiters_;

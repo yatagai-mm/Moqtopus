@@ -287,6 +287,106 @@ void publisher_tests() {
   duplicate.receive(encode_subscribe(1, {{"test"}, "track", {}}));
   assert(fake::connection->close_code == SessionCloseErrorCode::InvalidRequestId);
 }
+void setup_buffering_tests() {
+  {
+    auto session = Publisher::connect({});
+    session->register_track({{"test"}, "track", {}});
+    auto &request = fake::connection->peer_stream(false);
+    fragmented(request, encode_subscribe(1, {{"test"}, "track", {}}));
+    fragmented(request, encode_request_update(3, {{Parameter::uint8(kParameterForward, 0)}}));
+    assert(request.sent.empty());
+    assert(session->state().phase == SessionPhase::SetupInProgress);
+    setup();
+    const auto first = read_control_message(request.sent);
+    assert(first.message.type == kMessageSubscribeOk);
+    assert(read_control_message(request.sent, first.bytes).message.type == kMessageRequestOk);
+    assert(session->state().active_subscriptions == 1);
+  }
+  {
+    auto session = Publisher::connect({});
+    session->register_track({{"test"}, "track", {}});
+    auto &request = fake::connection->peer_stream(false);
+    const auto bytes = encode_subscribe(1, {{"test"}, "track", {}});
+    request.receive({bytes.front()});
+    setup();
+    assert(request.sent.empty());
+    request.receive(ByteBuffer(bytes.begin() + 1, bytes.end()));
+    assert(read_control_message(request.sent).message.type == kMessageSubscribeOk);
+  }
+  {
+    auto session = Publisher::connect({});
+    auto &invalid = fake::connection->peer_stream(false);
+    invalid.receive(encode_control_message(0xdead, {}));
+    auto &later = fake::connection->peer_stream(false);
+    later.receive(encode_subscribe(1, {{"test"}, "track", {}}));
+    setup();
+    assert(session->state().phase == SessionPhase::Closed);
+    assert(fake::connection->close_code == SessionCloseErrorCode::ProtocolViolation);
+    assert(later.sent.empty()); // Stop replay if an earlier message closes the session.
+  }
+  // Observe dispatch directly: data must not reach a role handler before SETUP,
+  // even if the whole stream (including FIN) or datagram has arrived already.
+  struct Probe : Session {
+    Probe() : Session({}) { start(); }
+    ~Probe() { close_and_wait(); }
+    std::vector<ByteBuffer> data, datagrams;
+    std::vector<bool> fins;
+    size_t requests = 0;
+    void handle_data_stream(uint64_t, const std::shared_ptr<StreamContext> &, ByteBuffer bytes, bool fin) override {
+      assert(state_.phase == SessionPhase::Ready);
+      data.push_back(std::move(bytes));
+      fins.push_back(fin);
+    }
+    void handle_peer_request(const ControlMessage &, const std::shared_ptr<StreamContext> &, ByteBuffer,
+                             bool) override { ++requests; }
+    void on_datagram(BytesView bytes) override { datagrams.push_back(bytes.to_owned()); }
+    void terminate_subscriptions(const std::string &) override {}
+    size_t active_subscriptions() const override { return 0; }
+  };
+  {
+    Probe session;
+    ByteBuffer bytes;
+    encode_subgroup_header(bytes, 7, 0, 0, kDefaultPublisherPriority);
+    encode_subgroup_object(bytes, 0, {}, {}, ByteBuffer{42});
+    fragmented(fake::connection->peer_stream(true), bytes, true);
+    ByteBuffer datagram{1, 2, 3};
+    fake::connection->callbacks.datagram_received(datagram);
+    datagram[0] = 9; // The transport's receive memory may be reused immediately.
+    assert(session.data.empty() && session.datagrams.empty());
+    setup();
+    assert(session.data == (std::vector<ByteBuffer>{bytes}));
+    assert(session.fins == (std::vector<bool>{true}));
+    assert(session.datagrams == (std::vector<ByteBuffer>{{1, 2, 3}}));
+  }
+  {
+    Probe session;
+    auto &request = fake::connection->peer_stream(false);
+    fragmented(request, encode_subscribe(1, {{"test"}, "track", {}}));
+    QUIC_STREAM_EVENT aborted{};
+    aborted.Type = QUIC_STREAM_EVENT_PEER_SEND_ABORTED;
+    request.event(&aborted);
+    setup();
+    assert(session.requests == 0);
+  }
+  {
+    Probe session;
+    fragmented(fake::connection->peer_stream(false), encode_subscribe(1, {{"test"}, "track", {}}));
+    fake::connection->callbacks.datagram_received(ByteBuffer{1});
+    session.close();
+    setup();
+    assert(session.requests == 0 && session.datagrams.empty());
+  }
+  {
+    auto session = Subscriber::connect({});
+    auto &request = fake::connection->peer_stream(false);
+    fragmented(request, encode_subscribe(1, {{"test"}, "track", {}}), true);
+    assert(request.sent.empty() && request.shutdowns.empty());
+    setup();
+    assert(read_control_message(request.sent).message.type == kMessageRequestError);
+    assert(session->state().phase == SessionPhase::Ready);
+  }
+}
+
 void edge_tests() {
   {
     // A Subgroup carries no Request ID. With concurrent pending SUBSCRIBEs,
@@ -450,6 +550,7 @@ int main() {
   subscriber_tests();
   track_properties_tests();
   publisher_tests();
+  setup_buffering_tests();
   edge_tests();
   lifetime_tests();
 }

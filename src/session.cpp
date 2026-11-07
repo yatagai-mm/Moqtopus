@@ -8,52 +8,58 @@
 #include <spdlog/spdlog.h>
 
 namespace moq {
-class Session::PeerStreamGate final : public StreamSink {
+class Session::PeerStreamGate final : public StreamSink, public std::enable_shared_from_this<PeerStreamGate> {
 public:
   PeerStreamGate(Session &session, std::weak_ptr<StreamContext> stream)
       : session_(session), stream_(std::move(stream)) {}
 
   void on_receive(const BytesView *chunks, size_t count, bool fin) override {
-    const auto stream = stream_.lock();
-    if (!stream || mode_ == Mode::Done)
-      return;
     const auto lock = session_.lock_session();
+    const auto stream = stream_.lock();
+    if (!stream || mode_ == Mode::Done || session_.state_.phase >= SessionPhase::Closing)
+      return;
+    received_fin = received_fin || fin;
     for (size_t index = 0; index < count; ++index) {
       if (mode_ == Mode::Padding) {
         if (!all_zero(chunks[index]))
           return session_.protocol_violation("padding stream contains non-zero bytes");
       } else {
-        bytes_.insert(bytes_.end(), chunks[index].begin(), chunks[index].end());
+        pending_bytes_.insert(pending_bytes_.end(), chunks[index].begin(), chunks[index].end());
       }
     }
     if (mode_ == Mode::Padding)
       return;
+    if (!stream->unidirectional() && defer_until_ready())
+      return;
     if (stream->unidirectional()) {
-      const auto type = read_varint(bytes_);
+      const auto type = read_varint(pending_bytes_);
       if (type.status != DecodeStatus::Done) {
-        if (fin)
+        if (received_fin)
           session_.protocol_violation("peer unidirectional stream ended before type");
         return;
       }
       if (type.value == kPaddingStreamType) {
         mode_ = Mode::Padding;
-        if (!all_zero({bytes_.data() + type.bytes, bytes_.size() - type.bytes})) {
+        if (!all_zero({pending_bytes_.data() + type.bytes, pending_bytes_.size() - type.bytes})) {
           return session_.protocol_violation("padding stream contains non-zero bytes");
         }
-        bytes_.clear();
+        pending_bytes_.clear();
         return;
       }
       if (type.value != kSetupStreamType) {
+        if (defer_until_ready())
+          return;
         mode_ = Mode::Done;
         if (type.value == kFetchStreamType || is_subgroup_stream_type(type.value)) {
-          return session_.handle_data_stream(type.value, stream, std::move(bytes_), fin);
+          return session_.handle_data_stream(type.value, stream, std::move(pending_bytes_), received_fin);
         }
         return session_.protocol_violation("unknown peer unidirectional stream type " + std::to_string(type.value));
       }
     }
-    const auto frame = read_control_message(bytes_);
+    // control stream or peer request stream
+    const auto frame = read_control_message(pending_bytes_);
     if (frame.status != DecodeStatus::Done) {
-      if (fin)
+      if (received_fin)
         session_.protocol_violation("peer stream ended before first message");
       return;
     }
@@ -62,15 +68,40 @@ public:
       std::string error;
       if (!decode_setup(frame.message.payload, error))
         return session_.protocol_violation(std::move(error));
-      bytes_.clear();
+      pending_bytes_.clear();
       session_.handle_peer_setup();
     } else {
-      bytes_.erase(bytes_.begin(), bytes_.begin() + frame.bytes);
-      session_.handle_peer_request(frame.message, stream, std::move(bytes_), fin);
+      pending_bytes_.erase(pending_bytes_.begin(), pending_bytes_.begin() + frame.bytes);
+      session_.handle_peer_request(frame.message, stream, std::move(pending_bytes_), received_fin);
     }
   }
 
+  void on_peer_send_aborted(uint64_t) override { discard(); }
+  void on_peer_receive_aborted(uint64_t) override { discard(); }
+  void on_stream_closed() override { discard(); }
+
 private:
+  void discard() {
+    const auto lock = session_.lock_session();
+    mode_ = Mode::Done;
+    pending_bytes_.clear();
+  }
+
+  bool defer_until_ready() {
+    if (session_.state_.phase == SessionPhase::Ready)
+      return false;
+    if (!queued_) {
+      queued_ = true;
+      session_.pending_setup_.push_back([self = shared_from_this()](bool replay) {
+        if (replay)
+          self->on_receive(nullptr, 0, false);
+        else
+          self->discard();
+      });
+    }
+    return true;
+  }
+
   static bool all_zero(BytesView bytes) {
     return std::all_of(bytes.begin(), bytes.end(), [](uint8_t byte) { return byte == 0; });
   }
@@ -78,7 +109,9 @@ private:
   Session &session_;
   std::weak_ptr<StreamContext> stream_;
   Mode mode_ = Mode::Classify;
-  ByteBuffer bytes_;
+  ByteBuffer pending_bytes_;
+  bool received_fin = false;
+  bool queued_ = false;
 };
 
 Session::Session(MsQuicClientConfig config) : config_(std::move(config)) {}
@@ -131,6 +164,15 @@ void Session::start() {
   };
   callbacks.datagram_received = [this](BytesView bytes) {
     const auto lock = lock_session();
+    if (state_.phase >= SessionPhase::Closing)
+      return;
+    if (state_.phase != SessionPhase::Ready) {
+      pending_setup_.push_back([this, bytes = bytes.to_owned()](bool replay) {
+        if (replay)
+          on_datagram(bytes);
+      });
+      return;
+    }
     on_datagram(bytes);
   };
   callbacks.transport_error = [this](std::string error) {
@@ -143,6 +185,7 @@ void Session::start() {
       state_.close_reason = SessionCloseReason{SessionCloseErrorCode::InternalError, "QUIC handshake did not complete"};
     }
     state_.phase = SessionPhase::Closed;
+    discard_pending_setup();
     fail_ready_waiters("MOQT session closed");
   };
   transport_ = std::make_unique<MsQuicTransportAdapter>(config_, std::move(callbacks));
@@ -201,6 +244,18 @@ void Session::maybe_ready() {
     waiter.set_value();
   ready_waiters_.clear();
   on_ready();
+  // Move the queue out because a replayed handler may close the session.
+  auto pending = std::move(pending_setup_);
+  pending_setup_.clear();
+  for (auto &deliver : pending)
+    deliver(state_.phase == SessionPhase::Ready);
+}
+
+void Session::discard_pending_setup() {
+  auto pending = std::move(pending_setup_);
+  pending_setup_.clear();
+  for (auto &deliver : pending)
+    deliver(false);
 }
 
 void Session::protocol_violation(std::string error) {
@@ -212,6 +267,7 @@ void Session::begin_close(SessionCloseErrorCode code, std::string reason) {
   if (state_.phase >= SessionPhase::Closing)
     return;
   state_.phase = SessionPhase::Closing;
+  discard_pending_setup();
   state_.close_reason = SessionCloseReason{code, reason};
   fail_ready_waiters(reason.empty() ? "MOQT session closing" : reason);
   terminate_subscriptions(reason);
