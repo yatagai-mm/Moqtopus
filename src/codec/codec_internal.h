@@ -19,7 +19,7 @@ struct Cursor {
   size_t remaining() const { return bytes.size - offset; }
   bool read_byte(uint8_t &value) { return offset < bytes.size && (value = bytes.data[offset++], true); }
   bool read_varint(uint64_t &value) {
-    const auto parsed = moq::read_varint(bytes.data, bytes.size, offset);
+    const VarintResult parsed = moq::read_varint(bytes.data, bytes.size, offset);
     if (parsed.status != DecodeStatus::Done)
       return false;
     offset += parsed.bytes;
@@ -98,19 +98,19 @@ struct Reader : Cursor {
     return value;
   }
   std::string string(size_t limit) {
-    const auto size = varint();
+    const uint64_t size = varint();
     require(size <= limit, "string exceeds length limit");
     std::string value;
     require(read_string(size, value), "truncated string");
     return value;
   }
   TrackNamespace track_namespace() {
-    const auto count = varint();
+    const uint64_t count = varint();
     require(count <= 32, "too many namespace fields");
     TrackNamespace fields;
     size_t total = 0;
     for (uint64_t i = 0; i < count; ++i) {
-      auto field = string(4096);
+      std::string field = string(4096);
       total += field.size();
       require(!field.empty() && total <= 4096, "invalid namespace field");
       fields.push_back(std::move(field));
@@ -118,16 +118,16 @@ struct Reader : Cursor {
     return fields;
   }
   void parameters(std::vector<Parameter> &out) {
-    const auto count = varint();
+    const uint64_t count = varint();
     uint64_t type = 0;
     for (uint64_t i = 0; i < count; ++i) {
-      const auto delta = varint();
+      const uint64_t delta = varint();
       require(delta <= std::numeric_limits<uint64_t>::max() - type && (i == 0 || delta != 0),
               "invalid message parameter type delta");
       type += delta;
-      const auto encoding = parameter_encoding(type);
+      const std::optional<ParameterEncoding> encoding = parameter_encoding(type);
       require(encoding.has_value(), "unknown message parameter");
-      const auto start = offset;
+      const size_t start = offset;
       switch (*encoding) {
       case ParameterEncoding::Uint8:
         byte();
@@ -140,7 +140,7 @@ struct Reader : Cursor {
         varint();
         break;
       case ParameterEncoding::LengthPrefixed: {
-        const auto size = varint();
+        const uint64_t size = varint();
         require(size <= 65535, "message parameter exceeds length limit");
         view(size);
         break;

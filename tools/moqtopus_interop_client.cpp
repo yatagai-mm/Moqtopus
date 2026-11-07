@@ -166,29 +166,29 @@ template <typename Session> void WaitUntilReady(Session &session) {
 }
 
 std::unique_ptr<moq::Subscriber> ConnectSubscriber(const Options &options) {
-  auto session = moq::Subscriber::connect(MakeClientConfig(options));
+  std::unique_ptr<moq::Subscriber> session = moq::Subscriber::connect(MakeClientConfig(options));
   WaitUntilReady(*session);
   return session;
 }
 
 std::unique_ptr<moq::Publisher> ConnectPublisher(const Options &options) {
-  auto session = moq::Publisher::connect(MakeClientConfig(options));
+  std::unique_ptr<moq::Publisher> session = moq::Publisher::connect(MakeClientConfig(options));
   WaitUntilReady(*session);
   return session;
 }
 
 TestResult RunTest(const std::string &name, const Options &options) {
-  const auto started = Clock::now();
+  const Clock::time_point started = Clock::now();
   TestResult result;
   const moq::SubscribeRequest request{kTestNamespace, kTestTrack, {}};
   const moq::PublishedTrack track{kTestNamespace, kTestTrack, {}};
   try {
     if (name == "setup-only") {
       result.expected = "peer SETUP";
-      auto session = ConnectSubscriber(options);
+      std::unique_ptr<moq::Subscriber> session = ConnectSubscriber(options);
     } else if (name == "announce-only" || name == "publish-namespace-done") {
       result.expected = "REQUEST_OK for PUBLISH_NAMESPACE";
-      auto publisher = ConnectPublisher(options);
+      std::unique_ptr<moq::Publisher> publisher = ConnectPublisher(options);
       publisher->register_track(track);
       std::this_thread::sleep_for(kAnnouncementDelay);
       if (name == "publish-namespace-done") {
@@ -198,14 +198,14 @@ TestResult RunTest(const std::string &name, const Options &options) {
       }
     } else if (name == "subscribe-error") {
       result.expected = "REQUEST_ERROR";
-      auto subscriber = ConnectSubscriber(options);
-      auto subscribe =
+      std::unique_ptr<moq::Subscriber> subscriber = ConnectSubscriber(options);
+      std::future<moq::Subscription> subscribe =
           subscriber->subscribe({{"nonexistent", "namespace"}, kTestTrack, {}}, std::make_shared<NullHandler>());
       if (subscribe.wait_for(kSetupTimeout) != std::future_status::ready) {
         throw std::runtime_error("timeout waiting for REQUEST_ERROR");
       }
       try {
-        const auto handle = subscribe.get();
+        const moq::Subscription handle = subscribe.get();
         subscriber->stop_subscription(handle.request_id);
         result.received = "SUBSCRIBE_OK";
         throw std::runtime_error("relay accepted a subscription to a non-existent track");
@@ -214,21 +214,21 @@ TestResult RunTest(const std::string &name, const Options &options) {
       }
     } else if (name == "announce-subscribe") {
       result.expected = "SUBSCRIBE_OK routed to publisher";
-      auto publisher = ConnectPublisher(options);
+      std::unique_ptr<moq::Publisher> publisher = ConnectPublisher(options);
       publisher->register_track(track);
       std::this_thread::sleep_for(kSubscriberStartDelay);
-      auto subscriber = ConnectSubscriber(options);
-      auto subscribe = subscriber->subscribe(request, std::make_shared<NullHandler>());
+      std::unique_ptr<moq::Subscriber> subscriber = ConnectSubscriber(options);
+      std::future<moq::Subscription> subscribe = subscriber->subscribe(request, std::make_shared<NullHandler>());
       if (subscribe.wait_for(kSubscribeTimeout) != std::future_status::ready) {
         throw std::runtime_error("timeout waiting for SUBSCRIBE_OK");
       }
       subscriber->stop_subscription(subscribe.get().request_id);
     } else {
       result.expected = "SUBSCRIBE_OK or REQUEST_ERROR";
-      auto subscriber = ConnectSubscriber(options);
-      auto subscribe = subscriber->subscribe(request, std::make_shared<NullHandler>());
+      std::unique_ptr<moq::Subscriber> subscriber = ConnectSubscriber(options);
+      std::future<moq::Subscription> subscribe = subscriber->subscribe(request, std::make_shared<NullHandler>());
       std::this_thread::sleep_for(kPublisherStartDelay);
-      auto publisher = ConnectPublisher(options);
+      std::unique_ptr<moq::Publisher> publisher = ConnectPublisher(options);
       publisher->register_track(track);
       std::this_thread::sleep_for(kSubscriberStartDelay);
       if (subscribe.wait_for(kSubscribeBeforeAnnounceTimeout) != std::future_status::ready) {

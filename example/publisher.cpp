@@ -51,7 +51,7 @@ int main(int argc, char **argv) {
     const moq::TrackNamespace track_namespace = ParseNamespace(argv[3]);
     const moq::TrackName track_name = argv[4];
 
-    auto session = moq::Publisher::connect(client_config);
+    std::unique_ptr<moq::Publisher> session = moq::Publisher::connect(client_config);
     session->ready().get();
     spdlog::info("session ready; publishing track \"{}\" via {}", track_name,
                  use_datagrams ? "datagrams" : "subgroup streams");

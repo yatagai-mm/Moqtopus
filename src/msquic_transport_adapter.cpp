@@ -134,7 +134,7 @@ MsQuicTransportAdapter::~MsQuicTransportAdapter() {
   }
   // StreamClose may synchronously invoke a shutdown callback that calls
   // remove_stream(), so it must run without streams_mutex_ held.
-  for (auto &entry : streams) {
+  for (std::pair<StreamContext *const, std::shared_ptr<StreamContext>> &entry : streams) {
     if (entry.second->handle_) {
       api_->StreamClose(entry.second->handle_);
       entry.second->handle_ = nullptr;
@@ -173,7 +173,7 @@ std::shared_ptr<StreamContext> MsQuicTransportAdapter::open_stream(bool unidirec
   throw_if_failed(api_->StreamOpen(connection_, open_flags, StreamContext::stream_callback, nullptr, &handle),
                   "StreamOpen");
 
-  auto stream = std::shared_ptr<StreamContext>(new StreamContext(*this, handle, unidirectional));
+  std::shared_ptr<StreamContext> stream(new StreamContext(*this, handle, unidirectional));
   api_->SetCallbackHandler(handle, reinterpret_cast<void *>(StreamContext::stream_callback), stream.get());
   {
     std::lock_guard<std::mutex> lock(streams_mutex_);
@@ -193,7 +193,7 @@ bool MsQuicTransportAdapter::send_datagram(ByteBuffer bytes) {
   if (!connection_) {
     return false;
   }
-  auto *pending = new PendingSend(std::move(bytes));
+  PendingSend *pending = new PendingSend(std::move(bytes));
   const QUIC_STATUS status = api_->DatagramSend(connection_, &pending->buffer, 1, QUIC_SEND_FLAG_NONE, pending);
   if (QUIC_FAILED(status)) {
     delete pending;
@@ -214,15 +214,14 @@ void MsQuicTransportAdapter::shutdown(moq::SessionCloseErrorCode error_code) {
 }
 
 QUIC_STATUS QUIC_API MsQuicTransportAdapter::connection_callback(HQUIC, void *context, QUIC_CONNECTION_EVENT *event) {
-  auto *self = static_cast<MsQuicTransportAdapter *>(context);
+  MsQuicTransportAdapter *self = static_cast<MsQuicTransportAdapter *>(context);
   switch (event->Type) {
   case QUIC_CONNECTION_EVENT_CONNECTED:
     self->callbacks_.connected();
     break;
   case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED: {
     const bool unidirectional = (event->PEER_STREAM_STARTED.Flags & QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL) != 0;
-    auto stream =
-        std::shared_ptr<StreamContext>(new StreamContext(*self, event->PEER_STREAM_STARTED.Stream, unidirectional));
+    std::shared_ptr<StreamContext> stream(new StreamContext(*self, event->PEER_STREAM_STARTED.Stream, unidirectional));
     stream->id_ = GetStreamID(self->api_, event->PEER_STREAM_STARTED.Stream);
     self->api_->SetCallbackHandler(event->PEER_STREAM_STARTED.Stream,
                                    reinterpret_cast<void *>(StreamContext::stream_callback), stream.get());

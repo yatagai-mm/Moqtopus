@@ -346,14 +346,15 @@ bool DataPlane::install_route(TrackAlias alias, std::shared_ptr<ReceiveRoute> ro
     if (!routes_by_alias_.emplace(alias, route).second) {
       return false;
     }
-    const auto pending = pending_subgroups_by_alias_.find(alias);
+    const std::unordered_map<TrackAlias, std::vector<std::shared_ptr<PendingSubgroupStream>>>::iterator pending =
+        pending_subgroups_by_alias_.find(alias);
     if (pending != pending_subgroups_by_alias_.end()) {
       pending_subgroups = std::move(pending->second);
       pending_subgroup_stream_count_ -= pending_subgroups.size();
       pending_subgroups_by_alias_.erase(pending);
     }
   }
-  const auto buffered = unknown_datagrams_.find(alias);
+  const std::unordered_map<TrackAlias, std::vector<ByteBuffer>>::iterator buffered = unknown_datagrams_.find(alias);
   if (buffered != unknown_datagrams_.end()) {
     const std::vector<ByteBuffer> datagrams = std::move(buffered->second);
     unknown_datagrams_.erase(buffered);
@@ -362,7 +363,7 @@ bool DataPlane::install_route(TrackAlias alias, std::shared_ptr<ReceiveRoute> ro
       deliver_datagram(BytesView{datagram}, false);
     }
   }
-  for (const auto &subgroup : pending_subgroups) {
+  for (const std::shared_ptr<PendingSubgroupStream> &subgroup : pending_subgroups) {
     subgroup->establish(route);
   }
   return true;
@@ -370,7 +371,7 @@ bool DataPlane::install_route(TrackAlias alias, std::shared_ptr<ReceiveRoute> ro
 
 void DataPlane::retire_route(TrackAlias alias) {
   std::unique_lock<std::shared_mutex> lock(routes_mutex_);
-  const auto route = routes_by_alias_.find(alias);
+  const std::unordered_map<TrackAlias, std::shared_ptr<ReceiveRoute>>::iterator route = routes_by_alias_.find(alias);
   if (route == routes_by_alias_.end()) {
     return;
   }
@@ -380,14 +381,16 @@ void DataPlane::retire_route(TrackAlias alias) {
 
 std::shared_ptr<ReceiveRoute> DataPlane::find_route(TrackAlias alias) const {
   std::shared_lock<std::shared_mutex> lock(routes_mutex_);
-  const auto route = routes_by_alias_.find(alias);
+  const std::unordered_map<TrackAlias, std::shared_ptr<ReceiveRoute>>::const_iterator route =
+      routes_by_alias_.find(alias);
   return route == routes_by_alias_.end() ? nullptr : route->second;
 }
 
 bool DataPlane::find_or_park_subgroup(TrackAlias alias, std::shared_ptr<PendingSubgroupStream> stream,
                                       std::shared_ptr<ReceiveRoute> &route) {
   std::unique_lock<std::shared_mutex> lock(routes_mutex_);
-  const auto established = routes_by_alias_.find(alias);
+  const std::unordered_map<TrackAlias, std::shared_ptr<ReceiveRoute>>::iterator established =
+      routes_by_alias_.find(alias);
   if (established != routes_by_alias_.end()) {
     route = established->second;
     return true;
@@ -402,13 +405,15 @@ bool DataPlane::find_or_park_subgroup(TrackAlias alias, std::shared_ptr<PendingS
 
 void DataPlane::discard_pending_subgroup(TrackAlias alias, const PendingSubgroupStream *stream) {
   std::unique_lock<std::shared_mutex> lock(routes_mutex_);
-  const auto found = pending_subgroups_by_alias_.find(alias);
+  const std::unordered_map<TrackAlias, std::vector<std::shared_ptr<PendingSubgroupStream>>>::iterator found =
+      pending_subgroups_by_alias_.find(alias);
   if (found == pending_subgroups_by_alias_.end()) {
     return;
   }
-  auto &pending = found->second;
-  const auto new_end = std::remove_if(pending.begin(), pending.end(),
-                                      [stream](const auto &candidate) { return candidate.get() == stream; });
+  std::vector<std::shared_ptr<PendingSubgroupStream>> &pending = found->second;
+  const std::vector<std::shared_ptr<PendingSubgroupStream>>::iterator new_end =
+      std::remove_if(pending.begin(), pending.end(),
+                                      [stream](const std::shared_ptr<PendingSubgroupStream> &candidate) { return candidate.get() == stream; });
   pending_subgroup_stream_count_ -= static_cast<size_t>(std::distance(new_end, pending.end()));
   pending.erase(new_end, pending.end());
   if (pending.empty()) {
@@ -419,7 +424,7 @@ void DataPlane::discard_pending_subgroup(TrackAlias alias, const PendingSubgroup
 void DataPlane::on_datagram(BytesView datagram) { deliver_datagram(datagram, true); }
 
 void DataPlane::start_subgroup_stream(const std::shared_ptr<StreamContext> &stream, ByteBuffer prefix, bool fin) {
-  auto receiver = std::make_shared<SubgroupReceiver>(*this, stream, std::move(prefix));
+  std::shared_ptr<SubgroupReceiver> receiver = std::make_shared<SubgroupReceiver>(*this, stream, std::move(prefix));
   stream->set_sink(receiver);            // swap StreamContext's StreamSink from PeerStreamGate to SubgroupReceiver
   receiver->on_receive(nullptr, 0, fin); // parse the prefix the gate buffered
 }
@@ -528,7 +533,7 @@ void DataPlane::deliver(ReceiveRoute &route, const Object &object) {
   if (!route.active.load()) {
     return;
   }
-  const auto final = route.final_object_in_group.find(object.group_id);
+  const std::unordered_map<GroupId, ObjectId>::iterator final = route.final_object_in_group.find(object.group_id);
   if (final != route.final_object_in_group.end() && object.object_id > final->second) {
     return track_error(route.request_id, "object followed final object in group");
   }

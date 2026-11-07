@@ -65,7 +65,7 @@ void write_varint(ByteBuffer &out, uint64_t value) {
   for (uint64_t max = 0x7f; length < 9 && value > max; max = (max << 7) | 0x7f)
     ++length;
   // Lengths 1..8 have a unary prefix; length 9 uses 0xff and all 64 value bits.
-  const auto prefix = static_cast<uint8_t>(0xff << (9 - length));
+  const uint8_t prefix = static_cast<uint8_t>(0xff << (9 - length));
   out.push_back(length == 9 ? 0xff : static_cast<uint8_t>(prefix | (value >> ((length - 1) * 8))));
   for (int shift = (static_cast<int>(length) - 2) * 8; shift >= 0; shift -= 8) {
     out.push_back(static_cast<uint8_t>(value >> shift));

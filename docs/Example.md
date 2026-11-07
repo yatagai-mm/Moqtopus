@@ -95,7 +95,7 @@ moq::SubscribeRequest request;
 request.track_namespace = ParseNamespace(argv[3]);
 request.track_name = argv[4];
 
-auto handler = std::make_shared<PrintingHandler>();
+std::shared_ptr<PrintingHandler> handler = std::make_shared<PrintingHandler>();
 const moq::Subscription subscription =
     session->subscribe(std::move(request), handler).get();
 ```

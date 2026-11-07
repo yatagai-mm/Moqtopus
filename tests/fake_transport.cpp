@@ -16,7 +16,7 @@ void Stream::receive(const moq::ByteBuffer &bytes, bool fin) {
 }
 
 Stream &Connection::peer_stream(bool unidirectional) {
-  auto stream = adapter->open_stream(unidirectional);
+  std::shared_ptr<moq::StreamContext> stream = adapter->open_stream(unidirectional);
   callbacks.peer_stream_started(stream);
   return *streams.back();
 }
@@ -33,7 +33,7 @@ MsQuicTransportAdapter::MsQuicTransportAdapter(MsQuicClientConfig, Callbacks cal
                           void *context) -> QUIC_STATUS {
       if (fake::connection->fail_send)
         return QUIC_STATUS_INTERNAL_ERROR;
-      auto &stream = *reinterpret_cast<fake::Stream *>(handle);
+      fake::Stream &stream = *reinterpret_cast<fake::Stream *>(handle);
       for (uint32_t i = 0; i < count; ++i)
         stream.sent.insert(stream.sent.end(), buffers[i].Buffer, buffers[i].Buffer + buffers[i].Length);
       stream.fin = (flags & QUIC_SEND_FLAG_FIN) != 0;
@@ -58,8 +58,8 @@ MsQuicTransportAdapter::MsQuicTransportAdapter(MsQuicClientConfig, Callbacks cal
 
 MsQuicTransportAdapter::~MsQuicTransportAdapter() {
   // Emit closure while the session still owns all callback targets.
-  const auto active = streams_;
-  for (const auto &entry : active) {
+  const std::unordered_map<StreamContext *, std::shared_ptr<StreamContext>> active = streams_;
+  for (const std::pair<StreamContext *const, std::shared_ptr<StreamContext>> &entry : active) {
     QUIC_STREAM_EVENT closed{};
     closed.Type = QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE;
     StreamContext::stream_callback(entry.second->handle_, entry.second.get(), &closed);
@@ -69,12 +69,11 @@ MsQuicTransportAdapter::~MsQuicTransportAdapter() {
 }
 void MsQuicTransportAdapter::start() { callbacks_.connected(); }
 std::shared_ptr<StreamContext> MsQuicTransportAdapter::open_stream(bool unidirectional) {
-  auto record = std::make_unique<fake::Stream>();
-  auto stream =
-      std::shared_ptr<StreamContext>(new StreamContext(*this, reinterpret_cast<HQUIC>(record.get()), unidirectional));
+  std::unique_ptr<fake::Stream> record = std::make_unique<fake::Stream>();
+  std::shared_ptr<StreamContext> stream(new StreamContext(*this, reinterpret_cast<HQUIC>(record.get()), unidirectional));
   stream->id_ = fake::connection->streams.size() * 4 + (unidirectional ? 2 : 0);
   record->event = [weak = std::weak_ptr<StreamContext>(stream)](QUIC_STREAM_EVENT *event) {
-    if (auto active = weak.lock())
+    if (std::shared_ptr<StreamContext> active = weak.lock())
       StreamContext::stream_callback(active->handle_, active.get(), event);
   };
   streams_.emplace(stream.get(), stream);

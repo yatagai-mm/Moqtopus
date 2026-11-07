@@ -36,7 +36,7 @@ ByteBuffer encode_track_properties(const TrackProperties &properties) {
   if (!properties.immutable_properties) {
     return encode_values(properties);
   }
-  const auto &immutable = *properties.immutable_properties;
+  const TrackPropertyValues &immutable = *properties.immutable_properties;
   if ((properties.object_delivery_timeout && immutable.object_delivery_timeout) ||
       (properties.max_cache_duration && immutable.max_cache_duration) ||
       (properties.subgroup_delivery_timeout && immutable.subgroup_delivery_timeout) ||
@@ -45,7 +45,7 @@ ByteBuffer encode_track_properties(const TrackProperties &properties) {
       (properties.dynamic_groups && immutable.dynamic_groups)) {
     throw std::invalid_argument("duplicate mutable and immutable Track Property");
   }
-  const auto encoded = encode_values(immutable);
+  const ByteBuffer encoded = encode_values(immutable);
   return encode_values(properties, &encoded);
 }
 

@@ -86,7 +86,7 @@ public:
 
   // StreamSink: entered from the transport thread; takes the session lock.
   void on_receive(const BytesView *chunks, size_t count, bool fin) override {
-    const auto lock = owner_.lock_session();
+    const std::unique_lock<std::recursive_mutex> lock = owner_.lock_session();
     if (terminated_) {
       return;
     }
@@ -96,17 +96,17 @@ public:
     process_buffer(fin);
   }
   void on_peer_send_aborted(uint64_t error_code) override {
-    const auto lock = owner_.lock_session();
+    const std::unique_lock<std::recursive_mutex> lock = owner_.lock_session();
     spdlog::debug("subscriber reset request stream for request {} (error {})", request_id_, error_code);
     cancel(static_cast<uint64_t>(StreamResetCode::Cancelled));
   }
   void on_peer_receive_aborted(uint64_t error_code) override {
-    const auto lock = owner_.lock_session();
+    const std::unique_lock<std::recursive_mutex> lock = owner_.lock_session();
     spdlog::debug("subscriber sent STOP_SENDING for request {} (error {})", request_id_, error_code);
     cancel(static_cast<uint64_t>(StreamResetCode::Cancelled));
   } // subscriber STOP_SENDING
   void on_stream_closed() override {
-    const auto lock = owner_.lock_session();
+    const std::unique_lock<std::recursive_mutex> lock = owner_.lock_session();
     if (!terminated_) {
       cancel(static_cast<uint64_t>(StreamResetCode::Cancelled));
     }
@@ -175,7 +175,7 @@ private:
       return;
     }
 
-    const auto rejection = owner_.send_plane_->update_subscription(request_id_, options);
+    const std::optional<RequestError> rejection = owner_.send_plane_->update_subscription(request_id_, options);
     if (rejection) {
       // A rejected update ends the subscription (draft-18 section 10.9.1).
       stream_->send(encode_request_error(rejection->code, rejection->reason));
@@ -184,7 +184,7 @@ private:
     }
 
     std::vector<Parameter> parameters;
-    if (const auto *track = owner_.send_plane_->find_track(track_namespace_, track_name_); track && track->largest) {
+    if (const SendDataPlane::TrackEntry *track = owner_.send_plane_->find_track(track_namespace_, track_name_); track && track->largest) {
       parameters.push_back(Parameter::location(kParameterLargestObject, *track->largest));
     }
     if (!stream_->send(encode_request_ok(std::move(parameters)))) {
@@ -204,7 +204,7 @@ private:
 Publisher::~Publisher() { close_and_wait(); }
 
 std::unique_ptr<Publisher> Publisher::connect(MsQuicClientConfig msquic_config, PublisherConfig publisher_config) {
-  auto session = std::unique_ptr<Publisher>(new Publisher(std::move(msquic_config), publisher_config));
+  std::unique_ptr<Publisher> session(new Publisher(std::move(msquic_config), publisher_config));
   session->start();
   return session;
 }
@@ -256,8 +256,8 @@ void Publisher::publish(PublishedObject object) {
 
 void Publisher::end_track(const TrackNamespace &track_namespace, const TrackName &track_name, PublishDoneCode code,
                           std::string reason) {
-  const auto lock = lock_session();
-  const auto *track = send_plane_->find_track(track_namespace, track_name);
+  const std::unique_lock<std::recursive_mutex> lock = lock_session();
+  const SendDataPlane::TrackEntry *track = send_plane_->find_track(track_namespace, track_name);
   if (!track)
     return;
   const std::vector<RequestId> request_ids(track->subscriptions.begin(), track->subscriptions.end());
@@ -325,7 +325,7 @@ void Publisher::announce_namespace(const TrackNamespace &track_namespace) {
     return;
   }
   try {
-    auto stream = transport_->open_stream(false);
+    std::shared_ptr<StreamContext> stream = transport_->open_stream(false);
     stream->set_sink(std::make_shared<NamespaceAnnouncementFSM>(name));
     const RequestId request_id = allocate_request_id();
     if (!stream->send(encode_publish_namespace(request_id, track_namespace))) {
@@ -344,7 +344,8 @@ void Publisher::withdraw_namespace(const TrackNamespace &track_namespace) {
       pending_announcements_.end());
 
   const std::string name = namespace_text(track_namespace);
-  const auto found = announced_namespaces_.find(name);
+  const std::unordered_map<std::string, std::shared_ptr<StreamContext>>::iterator found =
+      announced_namespaces_.find(name);
   if (found == announced_namespaces_.end()) {
     return;
   }
@@ -384,25 +385,26 @@ void Publisher::accept_subscribe(const ByteBuffer &payload, const std::shared_pt
   if (subscriptions_.size() >= publisher_config_.max_subscriptions) {
     return reject(RequestErrorCode::ExcessiveLoad, "subscription limit reached");
   }
-  const auto *track = send_plane_->find_track(subscribe->track_namespace, subscribe->track_name);
+  const SendDataPlane::TrackEntry *track = send_plane_->find_track(subscribe->track_namespace, subscribe->track_name);
   if (!track) {
     return reject(RequestErrorCode::DoesNotExist, "track is not published here");
   }
 
   const TrackAlias track_alias = next_track_alias_++;
-  const auto rejection = send_plane_->attach_subscription(subscribe->request_id, track_alias,
+  const std::optional<RequestError> rejection = send_plane_->attach_subscription(subscribe->request_id, track_alias,
                                                           subscribe->track_namespace, subscribe->track_name, options);
   if (rejection) {
     return reject(rejection->code, rejection->reason);
   }
 
-  auto subscription = std::make_shared<SubscriptionRequest>(subscribe->request_id, subscribe->track_namespace,
+  std::shared_ptr<SubscriptionRequest> subscription =
+      std::make_shared<SubscriptionRequest>(subscribe->request_id, subscribe->track_namespace,
                                                             subscribe->track_name, stream, *this);
   stream->set_sink(subscription); // swap StreamContext's StreamSink from PeerStreamGate to SubscriptionRequest
   subscriptions_.emplace(subscribe->request_id, subscription);
 
   std::vector<Parameter> parameters;
-  if (const auto largest = track->largest) {
+  if (const std::optional<Location> largest = track->largest) {
     parameters.push_back(Parameter::location(kParameterLargestObject, *largest));
   }
   if (!stream->send(encode_subscribe_ok(track_alias, std::move(parameters), track->encoded_track_properties))) {
@@ -416,9 +418,10 @@ void Publisher::accept_subscribe(const ByteBuffer &payload, const std::shared_pt
 }
 
 void Publisher::complete_subscription(RequestId request_id, PublishDoneCode code, std::string reason) {
-  const auto found = subscriptions_.find(request_id);
+  const std::unordered_map<RequestId, std::shared_ptr<SubscriptionRequest>>::iterator found =
+      subscriptions_.find(request_id);
   if (found != subscriptions_.end()) {
-    const auto subscription = found->second; // finish() erases the map entry
+    const std::shared_ptr<SubscriptionRequest> subscription = found->second; // finish() erases the map entry
     subscription->finish(code, reason);
   }
 }
@@ -433,8 +436,9 @@ std::shared_ptr<StreamContext> Publisher::open_data_stream() {
 }
 
 void Publisher::terminate_subscriptions(const std::string &) {
-  const auto active = subscriptions_; // cancel() erases the map entry
-  for (const auto &entry : active)
+  const std::unordered_map<RequestId, std::shared_ptr<SubscriptionRequest>> active =
+      subscriptions_; // cancel() erases the map entry
+  for (const std::pair<const RequestId, std::shared_ptr<SubscriptionRequest>> &entry : active)
     entry.second->cancel(static_cast<uint64_t>(StreamResetCode::SessionClosed));
 }
 

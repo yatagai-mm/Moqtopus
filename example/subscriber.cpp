@@ -118,14 +118,14 @@ int main(int argc, char **argv) {
     client_config.path = argc >= 6 ? argv[5] : "/";
     client_config.server_name = argc >= 7 ? argv[6] : "";
 
-    auto session = moq::Subscriber::connect(client_config);
+    std::unique_ptr<moq::Subscriber> session = moq::Subscriber::connect(client_config);
     session->ready().get();
 
     moq::SubscribeRequest request;
     request.track_namespace = ParseNamespace(argv[3]);
     request.track_name = argv[4];
 
-    auto handler = std::make_shared<PrintingHandler>();
+    std::shared_ptr<PrintingHandler> handler = std::make_shared<PrintingHandler>();
     const moq::Subscription subscription = session->subscribe(std::move(request), handler).get();
     std::cout << "subscribed request=" << subscription.request_id << " alias=" << subscription.track_alias << '\n';
 

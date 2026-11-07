@@ -14,8 +14,8 @@ public:
       : session_(session), stream_(std::move(stream)) {}
 
   void on_receive(const BytesView *chunks, size_t count, bool fin) override {
-    const auto lock = session_.lock_session();
-    const auto stream = stream_.lock();
+    const std::unique_lock<std::recursive_mutex> lock = session_.lock_session();
+    const std::shared_ptr<StreamContext> stream = stream_.lock();
     if (!stream || mode_ == Mode::Done || session_.state_.phase >= SessionPhase::Closing)
       return;
     received_fin = received_fin || fin;
@@ -32,7 +32,7 @@ public:
     if (!stream->unidirectional() && defer_until_ready())
       return;
     if (stream->unidirectional()) {
-      const auto type = read_varint(pending_bytes_);
+      const VarintResult type = read_varint(pending_bytes_);
       if (type.status != DecodeStatus::Done) {
         if (received_fin)
           session_.protocol_violation("peer unidirectional stream ended before type");
@@ -57,7 +57,7 @@ public:
       }
     }
     // control stream or peer request stream
-    const auto frame = read_control_message(pending_bytes_);
+    const ControlMessageResult frame = read_control_message(pending_bytes_);
     if (frame.status != DecodeStatus::Done) {
       if (received_fin)
         session_.protocol_violation("peer stream ended before first message");
@@ -82,7 +82,7 @@ public:
 
 private:
   void discard() {
-    const auto lock = session_.lock_session();
+    const std::unique_lock<std::recursive_mutex> lock = session_.lock_session();
     mode_ = Mode::Done;
     pending_bytes_.clear();
   }
@@ -142,14 +142,14 @@ void Session::on_peer_stream_started(std::shared_ptr<StreamContext> stream) {
 void Session::start() {
   MsQuicTransportAdapter::Callbacks callbacks;
   callbacks.connected = [this] {
-    const auto lock = lock_session();
+    const std::unique_lock<std::recursive_mutex> lock = lock_session();
     if (state_.phase != SessionPhase::Init)
       return;
     state_.phase = SessionPhase::SetupInProgress;
     try {
-      const auto authority =
+      const std::string authority =
           config_.authority.empty() ? config_.host + ":" + std::to_string(config_.port) : config_.authority;
-      auto stream = transport_->open_stream(true);
+      std::shared_ptr<StreamContext> stream = transport_->open_stream(true);
       if (!stream->send(encode_setup(authority, config_.path))) {
         throw std::runtime_error("StreamSend failed for SETUP");
       }
@@ -163,7 +163,7 @@ void Session::start() {
     on_peer_stream_started(std::move(stream));
   };
   callbacks.datagram_received = [this](BytesView bytes) {
-    const auto lock = lock_session();
+    const std::unique_lock<std::recursive_mutex> lock = lock_session();
     if (state_.phase >= SessionPhase::Closing)
       return;
     if (state_.phase != SessionPhase::Ready) {
@@ -176,11 +176,11 @@ void Session::start() {
     on_datagram(bytes);
   };
   callbacks.transport_error = [this](std::string error) {
-    const auto lock = lock_session();
+    const std::unique_lock<std::recursive_mutex> lock = lock_session();
     begin_close(SessionCloseErrorCode::InternalError, std::move(error));
   };
   callbacks.shutdown_complete = [this](bool handshake_completed) {
-    const auto lock = lock_session();
+    const std::unique_lock<std::recursive_mutex> lock = lock_session();
     if (!handshake_completed && !state_.close_reason) {
       state_.close_reason = SessionCloseReason{SessionCloseErrorCode::InternalError, "QUIC handshake did not complete"};
     }
@@ -193,9 +193,9 @@ void Session::start() {
 }
 
 std::future<void> Session::ready() {
-  const auto lock = lock_session();
+  const std::unique_lock<std::recursive_mutex> lock = lock_session();
   std::promise<void> promise;
-  auto future = promise.get_future();
+  std::future<void> future = promise.get_future();
   if (state_.phase == SessionPhase::Ready) {
     promise.set_value();
   } else if (state_.phase >= SessionPhase::Closing) {
@@ -207,21 +207,21 @@ std::future<void> Session::ready() {
 }
 
 SessionStateSnapshot Session::state() const {
-  const auto lock = lock_session();
-  auto snapshot = state_;
+  const std::unique_lock<std::recursive_mutex> lock = lock_session();
+  SessionStateSnapshot snapshot = state_;
   snapshot.active_subscriptions = active_subscriptions();
   return snapshot;
 }
 
 void Session::close(SessionCloseErrorCode error) {
-  const auto lock = lock_session();
+  const std::unique_lock<std::recursive_mutex> lock = lock_session();
   begin_close(error, "local close");
 }
 
 void Session::close_and_wait() {
   std::unique_ptr<MsQuicTransportAdapter> transport;
   {
-    const auto lock = lock_session();
+    const std::unique_lock<std::recursive_mutex> lock = lock_session();
     begin_close(SessionCloseErrorCode::NoError, "local close");
     transport = std::move(transport_);
   }
@@ -230,7 +230,7 @@ void Session::close_and_wait() {
 }
 
 void Session::handle_peer_setup() {
-  const auto lock = lock_session();
+  const std::unique_lock<std::recursive_mutex> lock = lock_session();
   state_.peer_setup_received = true;
   maybe_ready();
 }
@@ -240,26 +240,26 @@ void Session::maybe_ready() {
     return;
   state_.phase = SessionPhase::Ready;
   state_.negotiated_version = kAlpn;
-  for (auto &waiter : ready_waiters_)
+  for (std::promise<void> &waiter : ready_waiters_)
     waiter.set_value();
   ready_waiters_.clear();
   on_ready();
   // Move the queue out because a replayed handler may close the session.
-  auto pending = std::move(pending_setup_);
+  std::vector<std::function<void(bool)>> pending = std::move(pending_setup_);
   pending_setup_.clear();
-  for (auto &deliver : pending)
+  for (std::function<void(bool)> &deliver : pending)
     deliver(state_.phase == SessionPhase::Ready);
 }
 
 void Session::discard_pending_setup() {
-  auto pending = std::move(pending_setup_);
+  std::vector<std::function<void(bool)>> pending = std::move(pending_setup_);
   pending_setup_.clear();
-  for (auto &deliver : pending)
+  for (std::function<void(bool)> &deliver : pending)
     deliver(false);
 }
 
 void Session::protocol_violation(std::string error) {
-  const auto lock = lock_session();
+  const std::unique_lock<std::recursive_mutex> lock = lock_session();
   begin_close(SessionCloseErrorCode::ProtocolViolation, std::move(error));
 }
 
@@ -276,7 +276,7 @@ void Session::begin_close(SessionCloseErrorCode code, std::string reason) {
 }
 
 void Session::fail_ready_waiters(const std::string &reason) {
-  for (auto &waiter : ready_waiters_)
+  for (std::promise<void> &waiter : ready_waiters_)
     fail(waiter, reason);
   ready_waiters_.clear();
 }
@@ -285,7 +285,7 @@ RequestId Session::allocate_request_id() {
   if (next_request_id_ > std::numeric_limits<RequestId>::max() - 2) {
     throw std::overflow_error("MOQT Request ID space exhausted");
   }
-  const auto id = next_request_id_;
+  const RequestId id = next_request_id_;
   next_request_id_ += 2; // client Request IDs are even
   return id;
 }

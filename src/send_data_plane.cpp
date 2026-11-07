@@ -30,7 +30,7 @@ bool SendDataPlane::register_track(PublishedTrack track) {
   if (tracks_.find(key) != tracks_.end()) {
     return false;
   }
-  auto encoded = encode_track_properties(track.track_properties);
+  ByteBuffer encoded = encode_track_properties(track.track_properties);
   return tracks_.emplace(key, TrackEntry{std::move(track), std::nullopt, {}, std::move(encoded)}).second;
 }
 
@@ -41,12 +41,12 @@ bool SendDataPlane::unregister_track(const TrackNamespace &track_namespace, cons
 
 const SendDataPlane::TrackEntry *SendDataPlane::find_track(const TrackNamespace &track_namespace,
                                                            const TrackName &track_name) const {
-  const auto entry = tracks_.find(TrackKey{track_namespace, track_name});
+  const std::map<TrackKey, TrackEntry>::const_iterator entry = tracks_.find(TrackKey{track_namespace, track_name});
   return entry == tracks_.end() ? nullptr : &entry->second;
 }
 
 bool SendDataPlane::has_track_in_namespace(const TrackNamespace &track_namespace) const {
-  for (const auto &entry : tracks_) {
+  for (const std::pair<const TrackKey, TrackEntry> &entry : tracks_) {
     if (entry.second.track.track_namespace == track_namespace) {
       return true;
     }
@@ -96,7 +96,7 @@ std::optional<RequestError> SendDataPlane::attach_subscription(RequestId request
   if (nonzero(options.subgroup_delivery_timeout) || nonzero(options.object_delivery_timeout)) {
     return RequestError{RequestErrorCode::NotSupported, 0, "delivery timeouts are not supported"};
   }
-  const auto entry = tracks_.find(TrackKey{track_namespace, track_name});
+  const std::map<TrackKey, TrackEntry>::iterator entry = tracks_.find(TrackKey{track_namespace, track_name});
   if (entry == tracks_.end()) {
     return RequestError{RequestErrorCode::DoesNotExist, 0, "track is not registered"};
   }
@@ -119,7 +119,7 @@ std::optional<RequestError> SendDataPlane::attach_subscription(RequestId request
 
 std::optional<RequestError> SendDataPlane::update_subscription(RequestId request_id,
                                                                const SubscriptionOptions &options) {
-  const auto found = subscriptions_.find(request_id);
+  const std::unordered_map<RequestId, SubscriptionSend>::iterator found = subscriptions_.find(request_id);
   if (found == subscriptions_.end()) {
     return RequestError{RequestErrorCode::DoesNotExist, 0, "subscription is not established"};
   }
@@ -127,7 +127,7 @@ std::optional<RequestError> SendDataPlane::update_subscription(RequestId request
     return RequestError{RequestErrorCode::NotSupported, 0, "delivery timeouts are not supported"};
   }
   SubscriptionSend &subscription = found->second;
-  const auto track = tracks_.find(subscription.track_key);
+  const std::map<TrackKey, TrackEntry>::iterator track = tracks_.find(subscription.track_key);
   const std::optional<Location> largest = track == tracks_.end() ? std::nullopt : track->second.largest;
 
   if (options.filter) {
@@ -148,12 +148,12 @@ std::optional<RequestError> SendDataPlane::update_subscription(RequestId request
 }
 
 uint64_t SendDataPlane::detach_subscription(RequestId request_id, std::optional<uint64_t> reset_error) {
-  const auto found = subscriptions_.find(request_id);
+  const std::unordered_map<RequestId, SubscriptionSend>::iterator found = subscriptions_.find(request_id);
   if (found == subscriptions_.end()) {
     return 0;
   }
   SubscriptionSend &subscription = found->second;
-  for (auto &open : subscription.streams) {
+  for (std::pair<const std::pair<GroupId, SubgroupId>, OpenSubgroupStream> &open : subscription.streams) {
     if (reset_error) {
       open.second.stream->abort_send(*reset_error);
     } else {
@@ -161,7 +161,7 @@ uint64_t SendDataPlane::detach_subscription(RequestId request_id, std::optional<
     }
   }
   const uint64_t stream_count = subscription.stream_count;
-  const auto track = tracks_.find(subscription.track_key);
+  const std::map<TrackKey, TrackEntry>::iterator track = tracks_.find(subscription.track_key);
   if (track != tracks_.end()) {
     track->second.subscriptions.erase(request_id);
   }
@@ -170,7 +170,8 @@ uint64_t SendDataPlane::detach_subscription(RequestId request_id, std::optional<
 }
 
 void SendDataPlane::publish(const PublishedObject &object) {
-  const auto track_it = tracks_.find(TrackKey{object.track_namespace, object.track_name});
+  const std::map<TrackKey, TrackEntry>::iterator track_it =
+      tracks_.find(TrackKey{object.track_namespace, object.track_name});
   if (track_it == tracks_.end()) {
     spdlog::warn("publish for unregistered track \"{}\" dropped", object.track_name);
     return;
@@ -193,7 +194,7 @@ void SendDataPlane::publish(const PublishedObject &object) {
   // Completion callbacks detach subscriptions, so iterate over a stable copy.
   const std::vector<RequestId> request_ids(entry.subscriptions.begin(), entry.subscriptions.end());
   for (const RequestId request_id : request_ids) {
-    const auto subscription_it = subscriptions_.find(request_id);
+    const std::unordered_map<RequestId, SubscriptionSend>::iterator subscription_it = subscriptions_.find(request_id);
     if (subscription_it == subscriptions_.end()) {
       entry.subscriptions.erase(request_id);
       continue;
@@ -232,7 +233,7 @@ void SendDataPlane::send_on_subgroup_stream(SubscriptionSend &subscription, cons
   const SubgroupId subgroup_id = object.subgroup_id;
   const std::pair<GroupId, SubgroupId> key{object.group_id, subgroup_id};
 
-  auto open_it = subscription.streams.find(key);
+  std::map<std::pair<GroupId, SubgroupId>, OpenSubgroupStream>::iterator open_it = subscription.streams.find(key);
   if (open_it != subscription.streams.end() && open_it->second.last_object_id &&
       object.object_id <= *open_it->second.last_object_id) {
     // Cannot append out-of-order Object IDs to a subgroup stream; replace it.
@@ -245,7 +246,7 @@ void SendDataPlane::send_on_subgroup_stream(SubscriptionSend &subscription, cons
 
   ByteBuffer bytes;
   if (open_it == subscription.streams.end()) {
-    auto stream = callbacks_.open_data_stream();
+    std::shared_ptr<StreamContext> stream = callbacks_.open_data_stream();
     if (!stream) {
       return; // transport failure; the session is closing
     }

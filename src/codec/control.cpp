@@ -5,12 +5,12 @@ namespace moq {
 ByteBuffer encode_setup(std::string authority, std::string path) {
   ByteBuffer payload;
   uint64_t previous = 0;
-  for (const auto &option : {std::pair{SetupOption::Path, path},
+  for (const std::pair<SetupOption, std::string> &option : {std::pair{SetupOption::Path, path},
                              {SetupOption::Authority, authority},
                              {SetupOption::MoqtImplementation, std::string("kota-moqtopus")}}) {
     if (option.second.empty())
       continue;
-    const auto type = static_cast<uint64_t>(option.first);
+    const uint64_t type = static_cast<uint64_t>(option.first);
     write_varint(payload, type - previous);
     write_varint(payload, option.second.size());
     payload.insert(payload.end(), option.second.begin(), option.second.end());
@@ -23,7 +23,7 @@ bool decode_setup(const ByteBuffer &payload, std::string &error) {
   return decode<bool>(payload, error, [](Reader &reader, bool &) {
     uint64_t type = 0;
     while (reader.remaining()) {
-      const auto delta = reader.varint();
+      const uint64_t delta = reader.varint();
       Reader::require(delta <= std::numeric_limits<uint64_t>::max() - type, "SETUP option type overflow");
       type += delta;
       if (type & 1)
@@ -57,20 +57,20 @@ std::optional<Subscribe> decode_subscribe(const ByteBuffer &payload, std::string
 
 bool decode_subscription_options(const std::vector<Parameter> &parameters, SubscriptionOptions &options,
                                  std::string &error) {
-  for (const auto &parameter : parameters) {
-    const auto parsed = decode<bool>(parameter.encoded_value, error, [&](Reader &reader, bool &) {
+  for (const Parameter &parameter : parameters) {
+    const std::optional<bool> parsed = decode<bool>(parameter.encoded_value, error, [&](Reader &reader, bool &) {
       switch (parameter.type) {
       case kParameterForward:
         options.forward = reader.byte();
         Reader::require(*options.forward <= 1, "invalid FORWARD parameter");
         break;
       case kParameterGroupOrder: {
-        const auto order = reader.byte();
+        const uint8_t order = reader.byte();
         Reader::require(order == 1 || order == 2, "invalid GROUP_ORDER parameter");
         break;
       }
       case kParameterSubscriptionFilter: {
-        const auto size = reader.varint();
+        const uint64_t size = reader.varint();
         Reader::require(size == reader.remaining(), "invalid SUBSCRIPTION_FILTER length");
         SubscriptionFilter filter;
         filter.filter_type = reader.varint();

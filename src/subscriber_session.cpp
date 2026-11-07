@@ -26,7 +26,7 @@ public:
 
   // StreamSink: control responses arriving on the SUBSCRIBE bidi stream.
   void on_receive(const BytesView *chunks, size_t count, bool fin) override {
-    const auto lock = owner_.lock_session();
+    const std::unique_lock<std::recursive_mutex> lock = owner_.lock_session();
     for (size_t index = 0; index < count; ++index) {
       response_buffer_.insert(response_buffer_.end(), chunks[index].begin(), chunks[index].end());
     }
@@ -43,11 +43,11 @@ public:
     }
   }
   void on_peer_send_aborted(uint64_t error_code) override {
-    const auto lock = owner_.lock_session();
+    const std::unique_lock<std::recursive_mutex> lock = owner_.lock_session();
     terminate("publisher reset request stream with error " + std::to_string(error_code));
   }
   void on_stream_closed() override {
-    const auto lock = owner_.lock_session();
+    const std::unique_lock<std::recursive_mutex> lock = owner_.lock_session();
     terminate("request stream shut down before subscription ended");
   }
 
@@ -68,7 +68,7 @@ public:
                          {RequestErrorCode::InternalError, 0, reason.empty() ? "subscription terminated" : reason}));
       result_.reset();
     }
-    const auto message = reason.empty() ? "subscription terminated before REQUEST_UPDATE completed" : reason;
+    const std::string message = reason.empty() ? "subscription terminated before REQUEST_UPDATE completed" : reason;
     fail_updates(std::make_exception_ptr(std::runtime_error(message)));
     phase_ = SubscriptionPhase::Terminated;
     if (track_alias_)
@@ -101,10 +101,10 @@ private:
     case kMessageSubscribeOk: {
       if (!pending)
         return terminate("duplicate SUBSCRIBE_OK");
-      const auto ok = decode_subscribe_ok(message.payload, error);
+      const std::optional<SubscribeOk> ok = decode_subscribe_ok(message.payload, error);
       if (!ok)
         return terminate(error);
-      auto route = std::make_shared<ReceiveRoute>();
+      std::shared_ptr<ReceiveRoute> route = std::make_shared<ReceiveRoute>();
       route->request_id = request_id_;
       route->handler = handler_;
       if (!owner_.data_plane_->install_route(ok->track_alias, route)) {
@@ -122,7 +122,7 @@ private:
       return;
     }
     case kMessageRequestError: {
-      const auto rejected = decode_request_error(message.payload, error);
+      const std::optional<RequestError> rejected = decode_request_error(message.payload, error);
       if (!rejected)
         return terminate(error);
       if (pending) {
@@ -139,7 +139,7 @@ private:
     case kMessageRequestOk: {
       if (updates_.empty())
         return terminate("REQUEST_OK arrived without an in-flight REQUEST_UPDATE");
-      const auto ok = decode_request_ok(message.payload, error);
+      const std::optional<RequestOk> ok = decode_request_ok(message.payload, error);
       if (!ok)
         return terminate(error);
       if (!ok->track_properties.empty())
@@ -149,7 +149,7 @@ private:
       return;
     }
     case kMessagePublishDone: {
-      const auto done = decode_publish_done(message.payload, error);
+      const std::optional<PublishDone> done = decode_publish_done(message.payload, error);
       if (!done)
         return terminate(error);
       handler_->on_publish_done(*done);
@@ -176,7 +176,7 @@ private:
 Subscriber::~Subscriber() { close_and_wait(); }
 
 std::unique_ptr<Subscriber> Subscriber::connect(MsQuicClientConfig msquic_config, SubscriberConfig subscriber_config) {
-  auto session = std::unique_ptr<Subscriber>(new Subscriber(std::move(msquic_config), subscriber_config));
+  std::unique_ptr<Subscriber> session(new Subscriber(std::move(msquic_config), subscriber_config));
   session->start();
   return session;
 }
@@ -186,22 +186,23 @@ Subscriber::Subscriber(MsQuicClientConfig msquic_config, SubscriberConfig subscr
       data_plane_(std::make_unique<DataPlane>(
           subscriber_config, [this](std::string error) { protocol_violation(std::move(error)); },
           [this](RequestId request_id, std::string error) {
-            const auto lock = lock_session();
+            const std::unique_lock<std::recursive_mutex> lock = lock_session();
             stop_subscription_now(request_id, std::move(error),
                                   static_cast<uint64_t>(StreamResetCode::MALFORMED_TRACK));
           })) {}
 
 SubscriptionStateSnapshot Subscriber::subscription_state(RequestId request_id) const {
-  const auto lock = lock_session();
-  const auto found = subscriptions_.find(request_id);
+  const std::unique_lock<std::recursive_mutex> lock = lock_session();
+  const std::unordered_map<RequestId, std::shared_ptr<SubscriptionRequest>>::const_iterator found =
+      subscriptions_.find(request_id);
   if (found == subscriptions_.end())
     return {SubscriptionPhase::Terminated, request_id, {}, 0};
-  const auto &subscription = *found->second;
+  const SubscriptionRequest &subscription = *found->second;
   return {subscription.phase(), request_id, subscription.track_alias(), subscription.inflight_updates()};
 }
 
 void Subscriber::stop_subscription(RequestId request_id) {
-  const auto lock = lock_session();
+  const std::unique_lock<std::recursive_mutex> lock = lock_session();
   stop_subscription_now(request_id, {}, static_cast<uint64_t>(StreamResetCode::Cancelled));
 }
 
@@ -214,8 +215,8 @@ void Subscriber::handle_data_stream(uint64_t type, const std::shared_ptr<StreamC
 }
 
 std::future<Subscription> Subscriber::subscribe(SubscribeRequest request, std::shared_ptr<ObjectHandler> handler) {
-  const auto lock = lock_session();
-  auto promise = std::make_shared<std::promise<Subscription>>();
+  const std::unique_lock<std::recursive_mutex> lock = lock_session();
+  std::shared_ptr<std::promise<Subscription>> promise = std::make_shared<std::promise<Subscription>>();
   std::future<Subscription> future = promise->get_future();
   if (!handler) {
     fail(*promise, "SUBSCRIBE requires an ObjectHandler");
@@ -227,8 +228,9 @@ std::future<Subscription> Subscriber::subscribe(SubscribeRequest request, std::s
   }
   try {
     const RequestId request_id = allocate_request_id();
-    auto stream = transport_->open_stream(false);
-    auto subscription = std::make_shared<SubscriptionRequest>(request_id, std::move(handler), stream, *this, promise);
+    std::shared_ptr<StreamContext> stream = transport_->open_stream(false);
+    std::shared_ptr<SubscriptionRequest> subscription =
+        std::make_shared<SubscriptionRequest>(request_id, std::move(handler), stream, *this, promise);
     // Install request state before sending so an immediate response cannot race sink setup.
     stream->set_sink(subscription);
     subscriptions_.emplace(request_id, subscription);
@@ -244,15 +246,16 @@ std::future<Subscription> Subscriber::subscribe(SubscribeRequest request, std::s
 }
 
 std::future<RequestOk> Subscriber::request_update(RequestId existing_request_id, RequestUpdate update) {
-  const auto lock = lock_session();
+  const std::unique_lock<std::recursive_mutex> lock = lock_session();
   std::promise<RequestOk> promise;
   std::future<RequestOk> future = promise.get_future();
-  const auto found = subscriptions_.find(existing_request_id);
+  const std::unordered_map<RequestId, std::shared_ptr<SubscriptionRequest>>::iterator found =
+      subscriptions_.find(existing_request_id);
   if (found == subscriptions_.end() || found->second->phase() != moq::SubscriptionPhase::Established) {
     fail(promise, "REQUEST_UPDATE requires an established subscription");
     return future;
   }
-  auto subscription = found->second;
+  std::shared_ptr<SubscriptionRequest> subscription = found->second;
   try {
     const RequestId request_id = allocate_request_id();
     subscription->send_request_update(request_id, std::move(update), promise);
@@ -264,7 +267,7 @@ std::future<RequestOk> Subscriber::request_update(RequestId existing_request_id,
 
 void Subscriber::handle_peer_request(const ControlMessage &message, const std::shared_ptr<StreamContext> &stream,
                                      ByteBuffer, bool) {
-  const auto request_type = message.type;
+  const uint64_t request_type = message.type;
   if (!known_peer_request_type(request_type)) {
     protocol_violation("unknown peer request type " + std::to_string(request_type));
     return;
@@ -277,14 +280,15 @@ void Subscriber::handle_peer_request(const ControlMessage &message, const std::s
 }
 
 void Subscriber::stop_subscription_now(RequestId request_id, std::string reason, uint64_t stream_error_code) {
-  const auto found = subscriptions_.find(request_id);
+  const std::unordered_map<RequestId, std::shared_ptr<SubscriptionRequest>>::iterator found =
+      subscriptions_.find(request_id);
   if (found == subscriptions_.end()) {
     spdlog::debug("stop_subscription_now: no subscription found for request_id={}", request_id);
     return;
   }
-  auto subscription = found->second;
+  std::shared_ptr<SubscriptionRequest> subscription = found->second;
   subscription->terminate(std::move(reason));
-  if (auto stream = subscription->stream()) {
+  if (std::shared_ptr<StreamContext> stream = subscription->stream()) {
     stream->abort_send(stream_error_code);
     stream->abort_receive(stream_error_code);
   }
@@ -293,8 +297,9 @@ void Subscriber::stop_subscription_now(RequestId request_id, std::string reason,
 void Subscriber::on_datagram(BytesView bytes) { data_plane_->on_datagram(bytes); }
 
 void Subscriber::terminate_subscriptions(const std::string &reason) {
-  const auto active = subscriptions_; // terminate() erases its entry
-  for (const auto &entry : active)
+  const std::unordered_map<RequestId, std::shared_ptr<SubscriptionRequest>> active =
+      subscriptions_; // terminate() erases its entry
+  for (const std::pair<const RequestId, std::shared_ptr<SubscriptionRequest>> &entry : active)
     entry.second->terminate(reason);
 }
 

@@ -47,6 +47,7 @@ class Publisher final : private Session {
 public:
   ~Publisher() override;
 
+  // Initialize a publisher session and open a QUIC connection to the relay
   static std::unique_ptr<Publisher> connect(MsQuicClientConfig msquic_config, PublisherConfig publisher_config = {});
 
   using Session::close;

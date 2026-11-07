@@ -15,7 +15,7 @@ bool StreamContext::send(ByteBuffer bytes, bool fin) {
   if (!handle_) {
     return false;
   }
-  auto *pending = new PendingSend(std::move(bytes));
+  PendingSend *pending = new PendingSend(std::move(bytes));
   const QUIC_SEND_FLAGS flags = fin ? QUIC_SEND_FLAG_FIN : QUIC_SEND_FLAG_NONE;
   const QUIC_STATUS status = adapter_.api_->StreamSend(handle_, &pending->buffer, 1, flags, pending);
   if (QUIC_FAILED(status)) {
@@ -45,7 +45,7 @@ void StreamContext::abort_send(uint64_t error_code) {
 }
 
 QUIC_STATUS QUIC_API StreamContext::stream_callback(HQUIC stream, void *context, QUIC_STREAM_EVENT *event) {
-  auto *self = static_cast<StreamContext *>(context);
+  StreamContext *self = static_cast<StreamContext *>(context);
   // Local copy so the sink can swap the stream over to a new sink mid-call.
   const std::shared_ptr<StreamSink> sink = self->sink_;
   switch (event->Type) {
