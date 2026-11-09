@@ -60,8 +60,11 @@ resulting `TrackPropertyValues`. Moqtopus retains the typed values and encodes
 them internally. Property semantics are defined in [draft-18 Section 12](https://www.ietf.org/archive/id/draft-ietf-moq-transport-18.html#section-12).
 
 Invalid group-order values or duplicate mutable/immutable properties throw
-`std::invalid_argument` before the track is registered. This API supplies
-metadata. Local delivery-timeout enforcement, priority scheduling, and handling
+`std::invalid_argument` before the track is registered. For Subgroup streams,
+Moqtopus checks the effective object delivery timeout before sending to MsQuic.
+An expired object resets its stream and suppresses later objects in the same
+subgroup for that subscription. Data already handed to MsQuic is not timed out.
+Datagram timeouts, subgroup delivery timeouts, priority scheduling, and handling
 of dynamic group requests are not yet implemented. Subscriber-side decoded
 properties remain raw bytes.
 

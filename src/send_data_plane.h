@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -29,6 +30,7 @@ public:
     // The published object reached the end of the subscription's filter range
     // (or the track ended); the owner must finish it with PUBLISH_DONE.
     std::function<void(RequestId, PublishDoneCode, std::string)> subscription_complete;
+    std::function<std::chrono::steady_clock::time_point()> now = [] { return std::chrono::steady_clock::now(); };
   };
 
   explicit SendDataPlane(Callbacks callbacks);
@@ -72,11 +74,13 @@ private:
     std::optional<GroupId> end_group;
     uint64_t stream_count = 0;
     std::map<std::pair<GroupId, SubgroupId>, OpenSubgroupStream> streams;
+    std::set<std::pair<GroupId, SubgroupId>> expired_subgroups;
   };
 
   void resolve_filter(const SubscriptionFilter &filter, const std::optional<Location> &largest, Location &start,
                       std::optional<GroupId> &end_group) const;
   bool passes_filter(const SubscriptionSend &subscription, GroupId group_id, ObjectId object_id) const;
+  bool expire_subgroup(SubscriptionSend &subscription, const PublishedObject &object);
   void send_on_subgroup_stream(SubscriptionSend &subscription, const PublishedObject &object);
   void send_datagram_object(const SubscriptionSend &subscription, const PublishedObject &object);
 

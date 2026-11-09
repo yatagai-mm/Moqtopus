@@ -257,7 +257,40 @@ void SendDataPlane::publish(const PublishedObject &object) {
   }
 }
 
+bool SendDataPlane::expire_subgroup(SubscriptionSend &subscription, const PublishedObject &object) {
+  const std::pair<GroupId, SubgroupId> key{object.group_id, object.subgroup_id};
+  if (subscription.expired_subgroups.count(key)) {
+    return true;
+  }
+  const uint64_t timeout = subscription.object_delivery_timeout;
+  if (timeout == 0) {
+    return false;
+  }
+  const std::chrono::steady_clock::duration elapsed = callbacks_.now() - object.received_at;
+  if (elapsed <= std::chrono::steady_clock::duration::zero()) {
+    return false;
+  }
+  // Compare without converting the uint64 wire value into a signed clock
+  // duration (which could overflow). Preserve sub-millisecond precision.
+  const std::chrono::milliseconds whole_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
+  if (static_cast<uint64_t>(whole_ms.count()) < timeout ||
+      (static_cast<uint64_t>(whole_ms.count()) == timeout && elapsed == whole_ms)) {
+    return false;
+  }
+  subscription.expired_subgroups.insert(key);
+  const auto open = subscription.streams.find(key);
+  if (open != subscription.streams.end()) {
+    open->second.stream->abort_send(static_cast<uint64_t>(StreamResetCode::DeliveryTimeout));
+    subscription.streams.erase(open);
+  }
+  return true;
+}
+
 void SendDataPlane::send_on_subgroup_stream(SubscriptionSend &subscription, const PublishedObject &object) {
+  // Avoid opening a stream for an already expired object or subgroup.
+  if (expire_subgroup(subscription, object)) {
+    return;
+  }
   const SubgroupId subgroup_id = object.subgroup_id;
   const std::pair<GroupId, SubgroupId> key{object.group_id, subgroup_id};
 
@@ -302,6 +335,10 @@ void SendDataPlane::send_on_subgroup_stream(SubscriptionSend &subscription, cons
     close_stream = true;
   }
 
+  // Stream creation and serialization also consume the object's budget.
+  if (expire_subgroup(subscription, object)) {
+    return;
+  }
   if (!open.stream->send(std::move(bytes), close_stream)) {
     spdlog::warn("StreamSend failed on subgroup stream for request {}", subscription.request_id);
   }

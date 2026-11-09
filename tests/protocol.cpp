@@ -293,6 +293,109 @@ void object_delivery_timeout_options_tests() {
   assert(plane.object_delivery_timeout(1) == 0);
 }
 
+void subgroup_object_timeout_tests() {
+  using Clock = std::chrono::steady_clock;
+  Clock::time_point now = Clock::time_point{} + 10s;
+  std::chrono::milliseconds open_delay{0};
+  MsQuicTransportAdapter transport({}, {});
+  SendDataPlane plane({
+      [&] {
+        now += open_delay;
+        return transport.open_stream(true);
+      },
+      [&](ByteBuffer bytes) { return transport.send_datagram(std::move(bytes)); },
+      [](RequestId, PublishDoneCode, std::string) { assert(false); },
+      [&] { return now; }});
+  assert(plane.register_track({{"test"}, "timeouts", {}}));
+  SubscriptionOptions options;
+  options.object_delivery_timeout = 10;
+  assert(!plane.attach_subscription(1, 1, {"test"}, "timeouts", options));
+  PublishedObject object;
+  object.track_namespace = {"test"};
+  object.track_name = "timeouts";
+  object.payload = {1};
+  object.received_at = now - 10ms + 1ns;
+  plane.publish(object); // just before the deadline
+  assert(fake::connection->streams.size() == 1);
+  fake::Stream &first = *fake::connection->streams.front();
+  assert(!first.sent.empty() && first.shutdowns.empty());
+  object.object_id++;
+  object.received_at = now - 10ms;
+  const size_t previous_size = first.sent.size();
+  plane.publish(object); // exact deadline is allowed
+  assert(first.sent.size() > previous_size);
+  const ByteBuffer sent = first.sent;
+  object.object_id++;
+  object.received_at = now - 10ms - 1ns;
+  plane.publish(object); // even a sub-millisecond excess expires
+  assert(first.sent == sent && !first.fin);
+  assert(first.shutdowns.size() == 1);
+  assert(first.shutdowns.front().first == QUIC_STREAM_SHUTDOWN_FLAG_ABORT_SEND);
+  assert(first.shutdowns.front().second == static_cast<uint64_t>(StreamResetCode::DeliveryTimeout));
+  object.object_id++;
+  object.received_at = now;
+  plane.publish(object);
+  assert(fake::connection->streams.size() == 1 && first.shutdowns.size() == 1);
+  options.object_delivery_timeout = 0;
+  assert(!plane.update_subscription(1, options));
+  plane.publish(object); // disabling the timeout must not reopen the subgroup
+  assert(fake::connection->streams.size() == 1);
+
+  // A new subscription to the same track has independent subgroup state.
+  assert(!plane.attach_subscription(2, 2, {"test"}, "timeouts", options));
+  plane.publish(object);
+  assert(fake::connection->streams.size() == 2);
+  assert(plane.detach_subscription(2) == 1);
+  options.object_delivery_timeout = 10;
+  assert(!plane.update_subscription(1, options));
+  object.subgroup_id = 1;
+  plane.publish(object); // different subgroup in the same group still works
+  assert(fake::connection->streams.size() == 3);
+  object.group_id = 1;
+  object.subgroup_id = 0;
+  plane.publish(object); // same subgroup ID in another group still works
+  assert(fake::connection->streams.size() == 4);
+
+  object.group_id = 2;
+  object.received_at = now - 11ms;
+  plane.publish(object); // first object expired: no stream to reset or count
+  assert(fake::connection->streams.size() == 4);
+  object.received_at = now;
+  plane.publish(object);
+  assert(fake::connection->streams.size() == 4);
+
+  object.group_id = 3;
+  open_delay = 11ms;
+  plane.publish(object); // expires between the initial check and StreamSend
+  assert(fake::connection->streams.size() == 5);
+  fake::Stream &late = *fake::connection->streams.back();
+  assert(late.sent.empty() && late.shutdowns.size() == 1);
+  assert(late.shutdowns.front().second == static_cast<uint64_t>(StreamResetCode::DeliveryTimeout));
+  open_delay = 0ms;
+  object.received_at = now;
+  plane.publish(object);
+  assert(fake::connection->streams.size() == 5);
+
+  options.object_delivery_timeout = UINT64_MAX;
+  assert(!plane.update_subscription(1, options));
+  object.group_id = 4;
+  object.received_at = now - 1s;
+  object.end_of_subgroup = true;
+  plane.publish(object); // huge wire timeout must not overflow
+  assert(fake::connection->streams.size() == 6 && fake::connection->streams.back()->fin);
+  options.object_delivery_timeout = 0;
+  assert(!plane.update_subscription(1, options));
+  object.group_id = 5;
+  plane.publish(object); // zero means unlimited
+  assert(fake::connection->streams.size() == 7 && fake::connection->streams.back()->fin);
+  assert(plane.detach_subscription(1) == 6); // includes streams reset before sending
+  assert(!plane.attach_subscription(3, 3, {"test"}, "timeouts", options));
+  object.group_id = 0;
+  plane.publish(object); // tombstones disappear with the old subscription
+  assert(fake::connection->streams.size() == 8);
+  assert(plane.detach_subscription(3) == 1);
+}
+
 void publisher_tests() {
   std::unique_ptr<Publisher> session = Publisher::connect({});
   session->register_track({{"test"}, "track", {}});
@@ -601,6 +704,7 @@ int main() {
   subscriber_tests();
   track_properties_tests();
   object_delivery_timeout_options_tests();
+  subgroup_object_timeout_tests();
   publisher_tests();
   setup_buffering_tests();
   edge_tests();
