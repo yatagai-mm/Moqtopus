@@ -246,6 +246,7 @@ void Publisher::unregister_track(const TrackNamespace &track_namespace, const Tr
 }
 
 void Publisher::publish(PublishedObject object) {
+  object.received_at = std::chrono::steady_clock::now();
   const std::lock_guard<std::recursive_mutex> lock(mutex_);
   if (state_.phase != SessionPhase::Ready) {
     spdlog::warn("publish dropped: session is not ready");

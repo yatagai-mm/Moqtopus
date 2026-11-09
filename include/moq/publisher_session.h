@@ -3,6 +3,7 @@
 #include "moq/session.h"
 #include "moq/types.h"
 
+#include <chrono>
 #include <future>
 #include <memory>
 #include <optional>
@@ -34,8 +35,9 @@ struct PublishedObject {
   ByteBuffer payload;
   std::optional<ObjectStatusCode> status; // Normal / EndOfGroup / EndOfTrack
   DeliveryKind delivery_kind = DeliveryKind::SubgroupStream;
-  bool end_of_subgroup = false; // FIN the subgroup stream after this object
-  bool end_of_group = false;    // also announce that the group is complete
+  bool end_of_subgroup = false;                        // FIN the subgroup stream after this object
+  bool end_of_group = false;                           // also announce that the group is complete
+  std::chrono::steady_clock::time_point received_at{}; // Local receipt time, used for delivery timeout calculations.
 };
 
 class SendDataPlane;
