@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(moqtopus VERSION 0.0.6 LANGUAGES CXX)
+project(moqtopus VERSION 0.0.7 LANGUAGES CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
