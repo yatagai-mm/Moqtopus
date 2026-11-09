@@ -51,6 +51,8 @@ public:
   // FIN on local completion, RESET on cancellation; returns opened stream count.
   uint64_t detach_subscription(RequestId request_id, std::optional<uint64_t> reset_error = {});
   void publish(const PublishedObject &object);
+  // zero means unlimited, nullopt means no such subscription.
+  std::optional<uint64_t> object_delivery_timeout(RequestId request_id) const;
 
 private:
   struct OpenSubgroupStream {
@@ -64,6 +66,8 @@ private:
     TrackAlias track_alias = 0;
     TrackKey track_key;
     bool forward = true;
+    uint64_t publisher_object_delivery_timeout = 0;
+    uint64_t object_delivery_timeout = 0; // effective timeout in milliseconds
     Location start;
     std::optional<GroupId> end_group;
     uint64_t stream_count = 0;

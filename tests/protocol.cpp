@@ -1,4 +1,5 @@
 #include "fake_transport.h"
+#include "send_data_plane.h"
 #include "moq/codec.h"
 #include "moq/publisher_session.h"
 #include "moq/subscriber_session.h"
@@ -247,6 +248,51 @@ void track_properties_tests() {
   assert(ok && ok->track_properties == expected);
 }
 
+void object_delivery_timeout_options_tests() {
+  for (const bool immutable : {false, true}) {
+    for (const uint64_t publisher : {uint64_t{0}, uint64_t{100}, UINT64_MAX}) {
+      SendDataPlane plane({});
+      PublishedTrack track{{"test"}, "timeouts", {}};
+      if (immutable) {
+        track.track_properties.immutable_properties.emplace();
+        track.track_properties.immutable_properties->object_delivery_timeout = publisher;
+      } else {
+        track.track_properties.object_delivery_timeout = publisher;
+      }
+      assert(plane.register_track(track));
+      assert(!plane.attach_subscription(1, 1, {"test"}, "timeouts", {}));
+      assert(plane.object_delivery_timeout(1) == publisher);
+      SubscriptionOptions options;
+      options.object_delivery_timeout = 50;
+      assert(!plane.attach_subscription(2, 2, {"test"}, "timeouts", options));
+      assert(plane.object_delivery_timeout(2) == 50);
+      assert(!plane.update_subscription(1, options));
+      assert(plane.object_delivery_timeout(1) == 50);
+      assert(!plane.update_subscription(1, {}));
+      assert(plane.object_delivery_timeout(1) == 50);
+      options.object_delivery_timeout = UINT64_MAX;
+      assert(!plane.update_subscription(1, options));
+      assert(plane.object_delivery_timeout(1) == (publisher == 0 ? UINT64_MAX : publisher));
+      options.object_delivery_timeout = 0;
+      assert(!plane.update_subscription(1, options));
+      assert(plane.object_delivery_timeout(1) == publisher);
+      assert(plane.object_delivery_timeout(2) == 50); // independent subscriptions
+      options.object_delivery_timeout = 1;
+      options.subgroup_delivery_timeout = 1;
+      assert(plane.update_subscription(1, options)->code == RequestErrorCode::NotSupported);
+      assert(plane.object_delivery_timeout(1) == publisher); // rejected update is atomic
+      assert(plane.attach_subscription(3, 3, {"test"}, "timeouts", options));
+      assert(!plane.object_delivery_timeout(3));
+      plane.detach_subscription(1);
+      assert(!plane.object_delivery_timeout(1));
+    }
+  }
+  SendDataPlane plane({});
+  assert(plane.register_track({{"test"}, "unset", {}}));
+  assert(!plane.attach_subscription(1, 1, {"test"}, "unset", {}));
+  assert(plane.object_delivery_timeout(1) == 0);
+}
+
 void publisher_tests() {
   std::unique_ptr<Publisher> session = Publisher::connect({});
   session->register_track({{"test"}, "track", {}});
@@ -254,7 +300,8 @@ void publisher_tests() {
   session->ready().get();
   assert(read_control_message(fake::connection->streams.back()->sent).message.type == kMessagePublishNamespace);
   fake::Stream &request = fake::connection->peer_stream(false);
-  fragmented(request, encode_subscribe(1, {{"test"}, "track", {}}));
+  fragmented(request, encode_subscribe(1, {{"test"}, "track",
+                                          {Parameter::varint(kParameterObjectDeliveryTimeout, 100)}}));
   assert(read_control_message(request.sent).message.type == kMessageSubscribeOk);
   assert(session->state().active_subscriptions == 1);
   PublishedObject object;
@@ -279,6 +326,10 @@ void publisher_tests() {
   assert(fake::connection->datagrams.size() == 1);
   request.sent.clear();
   fragmented(request, encode_request_update(7, {{Parameter::varint(kParameterObjectDeliveryTimeout, 1)}}));
+  assert(read_control_message(request.sent).message.type == kMessageRequestOk);
+  assert(!request.fin && data.shutdowns.empty() && session->state().active_subscriptions == 1);
+  request.sent.clear();
+  fragmented(request, encode_request_update(9, {{Parameter::varint(kParameterSubgroupDeliveryTimeout, 1)}}));
   ControlMessageResult error = read_control_message(request.sent);
   assert(error.message.type == kMessageRequestError);
   assert(read_control_message(request.sent, error.bytes).message.type == kMessagePublishDone);
@@ -549,6 +600,7 @@ int main() {
   codec_tests();
   subscriber_tests();
   track_properties_tests();
+  object_delivery_timeout_options_tests();
   publisher_tests();
   setup_buffering_tests();
   edge_tests();

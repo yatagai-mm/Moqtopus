@@ -23,6 +23,25 @@ static bool valid_publish_status(const PublishedObject &object) {
 
 static bool nonzero(const std::optional<uint64_t> &value) { return value && *value != 0; }
 
+// Returns the effective object delivery timeout in milliseconds, or zero if unlimited.
+static uint64_t effective_object_delivery_timeout(uint64_t publisher, uint64_t subscriber) {
+  if (publisher == 0) {
+    return subscriber;
+  }
+  if (subscriber == 0) {
+    return publisher;
+  }
+  return publisher < subscriber ? publisher : subscriber;
+}
+
+std::optional<uint64_t> SendDataPlane::object_delivery_timeout(RequestId request_id) const {
+  const auto found = subscriptions_.find(request_id);
+  if (found == subscriptions_.end()) {
+    return std::nullopt;
+  }
+  return found->second.object_delivery_timeout;
+}
+
 SendDataPlane::SendDataPlane(Callbacks callbacks) : callbacks_(std::move(callbacks)) {}
 
 bool SendDataPlane::register_track(PublishedTrack track) {
@@ -93,8 +112,8 @@ std::optional<RequestError> SendDataPlane::attach_subscription(RequestId request
                                                                const TrackNamespace &track_namespace,
                                                                const TrackName &track_name,
                                                                const SubscriptionOptions &options) {
-  if (nonzero(options.subgroup_delivery_timeout) || nonzero(options.object_delivery_timeout)) {
-    return RequestError{RequestErrorCode::NotSupported, 0, "delivery timeouts are not supported"};
+  if (nonzero(options.subgroup_delivery_timeout)) {
+    return RequestError{RequestErrorCode::NotSupported, 0, "subgroup delivery timeout is not supported"};
   }
   const std::map<TrackKey, TrackEntry>::iterator entry = tracks_.find(TrackKey{track_namespace, track_name});
   if (entry == tracks_.end()) {
@@ -105,6 +124,11 @@ std::optional<RequestError> SendDataPlane::attach_subscription(RequestId request
   subscription.track_alias = track_alias;
   subscription.track_key = entry->first;
   subscription.forward = options.forward.value_or(1) != 0;
+  const TrackProperties &properties = entry->second.track.track_properties;
+  subscription.publisher_object_delivery_timeout = properties.object_delivery_timeout.value_or(
+      properties.immutable_properties ? properties.immutable_properties->object_delivery_timeout.value_or(0) : 0);
+  subscription.object_delivery_timeout = effective_object_delivery_timeout(
+      subscription.publisher_object_delivery_timeout, options.object_delivery_timeout.value_or(0));
   if (options.filter) {
     resolve_filter(*options.filter, entry->second.largest, subscription.start, subscription.end_group);
     if (subscription.end_group && entry->second.largest && entry->second.largest->group > *subscription.end_group) {
@@ -123,8 +147,8 @@ std::optional<RequestError> SendDataPlane::update_subscription(RequestId request
   if (found == subscriptions_.end()) {
     return RequestError{RequestErrorCode::DoesNotExist, 0, "subscription is not established"};
   }
-  if (nonzero(options.subgroup_delivery_timeout) || nonzero(options.object_delivery_timeout)) {
-    return RequestError{RequestErrorCode::NotSupported, 0, "delivery timeouts are not supported"};
+  if (nonzero(options.subgroup_delivery_timeout)) {
+    return RequestError{RequestErrorCode::NotSupported, 0, "subgroup delivery timeout is not supported"};
   }
   SubscriptionSend &subscription = found->second;
   const std::map<TrackKey, TrackEntry>::iterator track = tracks_.find(subscription.track_key);
@@ -139,6 +163,10 @@ std::optional<RequestError> SendDataPlane::update_subscription(RequestId request
     }
     subscription.start = start;
     subscription.end_group = end_group;
+  }
+  if (options.object_delivery_timeout) {
+    subscription.object_delivery_timeout = effective_object_delivery_timeout(
+        subscription.publisher_object_delivery_timeout, *options.object_delivery_timeout);
   }
   if (options.forward) {
     const bool forward = *options.forward != 0;
